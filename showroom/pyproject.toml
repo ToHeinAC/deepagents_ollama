@@ -1,0 +1,27 @@
+[project]
+name = "deepagents-ollama-researcher"
+version = "0.1.0"
+description = "Local Deep Researcher using LangChain Deep Agents with Ollama"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "deepagents>=0.1.0",
+    "langchain>=0.3.0",
+    "langchain-community>=0.3.0",
+    "langchain-core>=0.3.0",
+    "langchain-ollama>=0.3.0",
+    "langgraph>=0.4.0",
+    "streamlit>=1.40.0",
+    "tavily-python>=0.5.0",
+    "httpx>=0.28.0",
+    "markdownify>=0.14.0",
+    "python-dotenv>=1.0.0",
+    "pydantic>=2.0.0",
+]
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=8.0.0",
+    "black>=24.0.0",
+    "isort>=5.0.0",
+]

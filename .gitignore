@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environment
+.venv/
+venv/
+env/
+
+# Environment Variables
+.env
+.env.*
+
+# OS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+
+# Editor
+*.swp
+*.swo
+
+# Logs
+*.log
