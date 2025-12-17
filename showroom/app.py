@@ -21,6 +21,7 @@ load_dotenv()
 # Add current directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# Use LangGraph-based agent (works reliably with Ollama)
 from agent import get_agent, get_agent_config
 
 # Page configuration
@@ -321,9 +322,11 @@ def run_research():
         st.write("Initializing agent...")
         st.write(f"⏳ Using model: **{config['model']}** (may take 30-60 seconds per step)")
         
-        # Create a placeholder for live updates
+        # Create placeholders for live updates
         progress_placeholder = st.empty()
+        stats_placeholder = st.empty()
         event_log = st.expander("📊 Event Log (Debug)", expanded=False)
+        content_display = st.empty()
         
         # Initial state matching AgentState TypedDict
         initial_state = {
@@ -334,6 +337,8 @@ def run_research():
         
         max_retries = 3
         retry_count = 0
+        search_count = 0
+        think_count = 0
         
         # Auto-generate initial task list
         st.session_state.todos = [
@@ -348,6 +353,7 @@ def run_research():
                 event_count = 0
                 all_content = []  # Collect all content for final report
                 search_results = []  # Track search results
+                final_answer = None  # Track the final answer specifically
                 
                 # Stream agent execution
                 for event in agent.stream(initial_state):
@@ -370,7 +376,15 @@ def run_research():
                                 if hasattr(msg, 'content') and msg.content:
                                     content = str(msg.content)
                                     all_content.append(content)
-                                    st.write(f"💬 {content[:500]}...")
+                                    
+                                    # Check if this is the final answer (has content but no tool calls)
+                                    has_tool_calls = hasattr(msg, 'tool_calls') and msg.tool_calls
+                                    if not has_tool_calls and len(content) > 200:
+                                        final_answer = content
+                                        st.session_state.todos[3]["status"] = "in_progress"
+                                        content_display.markdown(f"### 📝 Final Answer Preview\n\n{content[:1000]}...")
+                                    elif content:
+                                        st.write(f"💬 {content[:300]}...")
                                     
                                     # Update task: analyzing complete
                                     if st.session_state.todos[0]["status"] == "in_progress":
@@ -380,28 +394,30 @@ def run_research():
                                     for tc in msg.tool_calls:
                                         tool_name = tc.get('name', 'unknown')
                                         tool_args = tc.get('args', {})
-                                        st.write(f"🔧 Tool: **{tool_name}**")
                                         
                                         # Track tavily search
                                         if tool_name == "tavily_search":
-                                            query = tool_args.get('query', '')
-                                            st.write(f"🔍 Searching: {query}")
-                                            # Update task: searching
+                                            search_count += 1
+                                            search_query = tool_args.get('query', '')
+                                            st.write(f"🔍 Search #{search_count}: {search_query}")
                                             st.session_state.todos[1]["status"] = "in_progress"
                                         
                                         # Track think tool
                                         if tool_name == "think_tool":
-                                            st.write(f"🧠 Reflecting...")
-                                            # Update task: reflecting
-                                            st.session_state.todos[1]["status"] = "complete"
+                                            think_count += 1
+                                            reflection = tool_args.get('reflection', '')[:200]
+                                            st.write(f"🧠 Think #{think_count}: {reflection}...")
                                             st.session_state.todos[2]["status"] = "in_progress"
+                                
+                                # Update stats
+                                stats_placeholder.info(f"📊 Searches: {search_count} | Reflections: {think_count} | Events: {event_count}")
                         
                         # Handle tools node output
                         if key == "tools" and isinstance(value, dict):
                             messages = value.get("messages", [])
                             for msg in messages:
                                 if hasattr(msg, 'content') and msg.content:
-                                    content_preview = str(msg.content)[:300]
+                                    content_preview = str(msg.content)[:200]
                                     st.write(f"📄 Result: {content_preview}...")
                                     search_results.append(str(msg.content))
                         
@@ -425,25 +441,35 @@ def run_research():
                     todo["status"] = "complete"
                 
                 # Build final report from all captured content
-                if all_content:
-                    # Use the last substantial content as the final report
-                    final_answer = all_content[-1] if all_content else "No answer generated."
-                    
+                # Use the explicitly captured final_answer, or fall back to last content
+                if final_answer is None and all_content:
+                    # Find the longest content as the likely final answer
+                    final_answer = max(all_content, key=len) if all_content else "No answer generated."
+                
+                if final_answer:
                     # Build comprehensive report
                     report = f"# Research Report\n\n"
-                    report += f"**Query:** {query}\n\n"
+                    report += f"**Query:** {st.session_state.research_query}\n\n"
+                    report += f"**Research Stats:** {search_count} searches, {think_count} reflections\n\n"
                     report += f"## Answer\n\n{final_answer}\n\n"
                     
                     if search_results:
-                        report += f"## Sources Consulted\n\n"
-                        for i, result in enumerate(search_results[:3], 1):
-                            # Extract just the URL if present
+                        report += f"## Sources Consulted ({len(search_results)} total)\n\n"
+                        # Extract URLs from search results
+                        urls_found = []
+                        for result in search_results:
                             if "URL:" in result:
-                                url_line = [l for l in result.split('\n') if 'URL:' in l]
-                                if url_line:
-                                    report += f"{i}. {url_line[0]}\n"
+                                for line in result.split('\n'):
+                                    if 'URL:' in line:
+                                        urls_found.append(line.strip())
+                        for i, url in enumerate(urls_found[:10], 1):
+                            report += f"{i}. {url}\n"
                     
                     st.session_state.final_report = report
+                    st.success(f"✅ Research complete! {search_count} searches, {len(all_content)} responses captured.")
+                else:
+                    st.session_state.final_report = "No final answer was generated. Please try again."
+                    st.warning("⚠️ No final answer captured. The model may not have concluded properly.")
                 
                 # Mark as complete
                 st.session_state.current_phase = "complete"

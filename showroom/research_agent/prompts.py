@@ -95,12 +95,12 @@ Think like a human researcher with limited time. Follow these steps:
 
 <Hard Limits>
 **Tool Call Budgets** (Prevent excessive searching):
-- **Simple queries**: Use 2-3 search tool calls maximum
-- **Complex queries**: Use up to 5 search tool calls maximum
-- **Always stop**: After 5 search tool calls if you cannot find the right sources
+- **Simple queries**: Use 2-5 search tool calls maximum
+- **Complex queries**: Use up to 15 search tool calls maximum
+- **Always stop**: After 15 search tool calls if you cannot find the right sources
 
 **Stop Immediately When**:
-- You can answer the user's question comprehensively
+- You can answer the user's question deeply and comprehensively
 - You have 3+ relevant examples/sources for the question
 - Your last 2 searches returned similar information
 </Hard Limits>

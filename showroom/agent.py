@@ -29,11 +29,11 @@ from research_agent.tools import tavily_search, think_tool
 load_dotenv()
 
 # Configuration from environment
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "Qwen3:14b")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3:14b")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 MAX_CONCURRENT_RESEARCH_UNITS = int(os.getenv("MAX_CONCURRENT_RESEARCH_UNITS", "3"))
 MAX_RESEARCHER_ITERATIONS = int(os.getenv("MAX_RESEARCHER_ITERATIONS", "3"))
-RECURSION_LIMIT = int(os.getenv("RECURSION_LIMIT", "50"))
+RECURSION_LIMIT = int(os.getenv("RECURSION_LIMIT", "100"))
 
 # Get current date for prompts
 current_date = datetime.now().strftime("%Y-%m-%d")
@@ -54,10 +54,28 @@ WORKFLOW:
 1. Think about what you need to search for
 2. Use tavily_search to find relevant information  
 3. Use think_tool to reflect on what you found and decide next steps
-4. Repeat searches if needed (max 5 searches)
-5. When you have enough information, provide a comprehensive answer
+4. **You MUST perform at least 15-20 searches** before providing your final answer
+5. Explore multiple angles: news, analysis, expert opinions, data sources, historical context
+6. When you have comprehensive coverage from multiple sources, provide a detailed answer
 
-Always cite your sources with URLs.
+RESEARCH DEPTH REQUIREMENTS:
+- **Minimum 15-20 different searches** covering different aspects of the topic
+- **Use think_tool after every 2-3 searches** to assess progress and plan next searches
+- **Only conclude when you have 10+ unique, high-quality sources**
+- **Your final answer MUST be 1500+ words** with detailed analysis and inline citations
+- DO NOT provide a final answer until you have completed at least 15 searches
+
+SEARCH STRATEGY:
+- Search 1-3: Overview and recent news
+- Search 4-6: Expert analysis and opinions
+- Search 7-9: Historical context and trends
+- Search 10-12: Data sources and statistics
+- Search 13-15: Contrarian views and alternative perspectives
+- Search 16-20: Deep dives into specific aspects discovered
+
+After each think_tool reflection, explicitly count how many searches you've done. If under 15, continue searching.
+
+Always cite your sources with URLs in [1], [2], [3] format.
 """
 
 
@@ -79,6 +97,9 @@ def create_agent():
         """Process the current state and decide next action."""
         messages = state["messages"]
         
+        print(f"\n[AGENT] Processing state with {len(messages)} messages")
+        print(f"[AGENT] Iteration: {state.get('iteration_count', 0)}")
+        
         # Add system prompt as first message if not present
         if not messages or not any(
             hasattr(m, 'content') and SYSTEM_PROMPT[:50] in str(m.content) 
@@ -87,24 +108,41 @@ def create_agent():
             system_msg = HumanMessage(content=f"System: {SYSTEM_PROMPT}")
             messages = [system_msg] + list(messages)
         
+        print(f"[AGENT] Invoking model: {OLLAMA_MODEL}")
+        
         # Get model response with retry for empty responses
         max_retries = 3
         for attempt in range(max_retries):
-            response = model_with_tools.invoke(messages)
-            
-            # Check if response has content or tool calls
-            has_content = hasattr(response, 'content') and response.content
-            has_tools = hasattr(response, 'tool_calls') and response.tool_calls
-            
-            if has_content or has_tools:
-                break
-            
-            # If empty, add a prompt to encourage a response
-            if attempt < max_retries - 1:
-                messages = messages + [HumanMessage(content="Please provide a response or use a tool to search for information.")]
+            try:
+                response = model_with_tools.invoke(messages)
+                
+                # Check if response has content or tool calls
+                has_content = hasattr(response, 'content') and response.content
+                has_tools = hasattr(response, 'tool_calls') and response.tool_calls
+                
+                print(f"[AGENT] Response attempt {attempt+1}: has_content={has_content}, has_tools={has_tools}")
+                if has_content:
+                    print(f"[AGENT] Content preview: {str(response.content)[:200]}...")
+                if has_tools:
+                    print(f"[AGENT] Tool calls: {response.tool_calls}")
+                
+                if has_content or has_tools:
+                    break
+                
+                # If empty, add a prompt to encourage a response
+                if attempt < max_retries - 1:
+                    print(f"[AGENT] Empty response, retrying...")
+                    messages = messages + [HumanMessage(content="You MUST use the tavily_search tool to search for information. Please search now.")]
+            except Exception as e:
+                print(f"[AGENT] Error during invoke: {e}")
+                import traceback
+                traceback.print_exc()
+                if attempt == max_retries - 1:
+                    raise
         
         # If still empty after retries, create a fallback response
         if not (has_content or has_tools):
+            print("[AGENT] All retries exhausted, using fallback response")
             response = AIMessage(content="I apologize, but I'm having trouble processing this request. Please try rephrasing your question.")
         
         return {
@@ -118,15 +156,21 @@ def create_agent():
         messages = state["messages"]
         last_message = messages[-1] if messages else None
         
+        print(f"\n[ROUTER] Checking routing decision...")
+        print(f"[ROUTER] Iteration count: {state.get('iteration_count', 0)}")
+        
         # Check iteration limit
         if state.get("iteration_count", 0) >= RECURSION_LIMIT:
+            print(f"[ROUTER] Reached recursion limit, ending")
             return "end"
         
         # If last message has tool calls, continue to tools
         if last_message and hasattr(last_message, 'tool_calls') and last_message.tool_calls:
+            print(f"[ROUTER] Has tool calls, routing to tools")
             return "tools"
         
         # Otherwise, we're done
+        print(f"[ROUTER] No tool calls, ending")
         return "end"
     
     # Build the graph
