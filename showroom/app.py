@@ -100,6 +100,9 @@ def initialize_session_state():
     
     if "subagent_activity" not in st.session_state:
         st.session_state.subagent_activity = []
+    
+    if "research_steps" not in st.session_state:
+        st.session_state.research_steps = []  # Store detailed research steps for display
 
 
 def render_sidebar():
@@ -151,7 +154,6 @@ def render_sidebar():
 
 def render_input_phase():
     """Render the query input phase."""
-    st.markdown("## 🔍 Deep Research")
     st.markdown("Ask any research question and the deep agent will analyze, research, and synthesize a comprehensive report.")
     
     # Query input
@@ -262,6 +264,7 @@ def run_research():
                 all_content = []  # Collect all content for final report
                 search_results = []  # Track search results
                 final_answer = None  # Track the final answer specifically
+                research_steps = []  # Track detailed research steps
                 
                 # Stream agent execution
                 for event in agent.stream(initial_state):
@@ -337,13 +340,24 @@ def run_research():
                                             search_query = tool_args.get('query', '')
                                             st.write(f"🔍 Search #{search_count}: {search_query}")
                                             st.session_state.todos[1]["status"] = "in_progress"
+                                            research_steps.append({
+                                                "type": "search",
+                                                "step": event_count,
+                                                "query": search_query,
+                                                "result": None  # Will be filled by tool result
+                                            })
                                         
                                         # Track think tool
                                         if tool_name == "think_tool":
                                             think_count += 1
-                                            reflection = tool_args.get('reflection', '')[:200]
-                                            st.write(f"🧠 Think #{think_count}: {reflection}...")
+                                            reflection = tool_args.get('reflection', '')
+                                            st.write(f"🧠 Think #{think_count}: {reflection[:200]}...")
                                             st.session_state.todos[2]["status"] = "in_progress"
+                                            research_steps.append({
+                                                "type": "reflection",
+                                                "step": event_count,
+                                                "content": reflection
+                                            })
                                         
                                         # Track submit_final_answer - capture the answer even if rejected
                                         if tool_name == "submit_final_answer":
@@ -376,9 +390,18 @@ def run_research():
                                         st.session_state.todos[3]["status"] = "complete"
                                     elif 'SUBMISSION_REJECTED' in tool_result:
                                         st.warning(f"⚠️ Submission rejected: {tool_result[:200]}...")
+                                    elif 'Reflection recorded:' in tool_result:
+                                        # This is a think_tool result, already tracked
+                                        pass
                                     else:
+                                        # This is likely a search result - attach to last search step
                                         content_preview = tool_result[:200]
                                         st.write(f"📄 Result: {content_preview}...")
+                                        # Update the last search step with its result
+                                        for step in reversed(research_steps):
+                                            if step["type"] == "search" and step["result"] is None:
+                                                step["result"] = tool_result
+                                                break
                                     
                                     search_results.append(tool_result)
                         
@@ -400,6 +423,9 @@ def run_research():
                 # Mark all tasks complete
                 for todo in st.session_state.todos:
                     todo["status"] = "complete"
+                
+                # Store research steps in session state for display
+                st.session_state.research_steps = research_steps
                 
                 # Build final report from the accepted final answer
                 # Look for FINAL_ANSWER_ACCEPTED in search_results (tool outputs)
@@ -495,16 +521,53 @@ def render_completion_phase():
     st.divider()
     
     # Research statistics
+    search_steps = [s for s in st.session_state.research_steps if s["type"] == "search"]
+    reflection_steps = [s for s in st.session_state.research_steps if s["type"] == "reflection"]
+    
     col1, col2, col3 = st.columns(3)
     with col1:
         st.metric("Total Steps", st.session_state.iteration_count)
     with col2:
-        st.metric("Tasks Completed", len([t for t in st.session_state.todos if t.get("status") == "complete"]))
+        st.metric("Searches", len(search_steps))
     with col3:
-        st.metric("Sub-Agents Used", len(st.session_state.subagent_activity))
+        st.metric("Reflections", len(reflection_steps))
     
-    # Progress history expander
-    with st.expander("📜 Research Progress History", expanded=False):
+    # Research work in progress - Searches
+    if search_steps:
+        with st.expander(f"🔍 Web Searches ({len(search_steps)})", expanded=True):
+            for i, step in enumerate(search_steps, 1):
+                with st.expander(f"Search {i}: {step['query'][:60]}{'...' if len(step['query']) > 60 else ''}", expanded=False):
+                    st.markdown(f"**Query:** {step['query']}")
+                    if step.get('result'):
+                        st.markdown("**Results:**")
+                        # Parse and display results nicely
+                        result = step['result']
+                        # Extract title and URL if present
+                        if 'Title:' in result and 'URL:' in result:
+                            lines = result.split('\n')
+                            for line in lines:
+                                if line.startswith('Title:'):
+                                    st.markdown(f"📄 **{line.replace('Title:', '').strip()}**")
+                                elif line.startswith('URL:'):
+                                    url = line.replace('URL:', '').strip()
+                                    st.markdown(f"🔗 [{url}]({url})")
+                                elif line.startswith('Content:'):
+                                    content = line.replace('Content:', '').strip()
+                                    st.caption(content[:500] + "..." if len(content) > 500 else content)
+                        else:
+                            st.caption(result[:800] + "..." if len(result) > 800 else result)
+                    else:
+                        st.caption("No results captured")
+    
+    # Research work in progress - Reflections
+    if reflection_steps:
+        with st.expander(f"🧠 Agent Reflections ({len(reflection_steps)})", expanded=False):
+            for i, step in enumerate(reflection_steps, 1):
+                with st.expander(f"Reflection {i}", expanded=False):
+                    st.markdown(step.get('content', 'No content'))
+    
+    # Raw progress history (collapsed by default)
+    with st.expander("📜 Raw Progress History", expanded=False):
         if st.session_state.step_history:
             for i, step in enumerate(st.session_state.step_history):
                 if step:
