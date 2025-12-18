@@ -147,71 +147,6 @@ def render_sidebar():
             st.rerun()
 
 
-def render_task_tracker():
-    """Render the to-do list and task tracking panel."""
-    st.subheader("📋 Research Tasks")
-    
-    if not st.session_state.todos:
-        st.info("No tasks created yet. The agent will create a task list when research begins.")
-        return
-    
-    for i, todo in enumerate(st.session_state.todos):
-        status = todo.get("status", "pending")
-        title = todo.get("title", f"Task {i+1}")
-        
-        if status == "complete":
-            st.markdown(f"✅ ~~{title}~~")
-        elif status == "in_progress":
-            st.markdown(f"🔄 **{title}** _(in progress)_")
-        else:
-            st.markdown(f"⏳ {title}")
-
-
-def render_step_indicator():
-    """Render current and previous step indicators."""
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.subheader("🎯 Current Step")
-        if st.session_state.current_step:
-            st.markdown(f"""
-            <div class="step-indicator step-current">
-                <strong>{st.session_state.current_step.get('name', 'Processing...')}</strong>
-                <br><small>{st.session_state.current_step.get('description', '')}</small>
-            </div>
-            """, unsafe_allow_html=True)
-        else:
-            st.info("Waiting for agent to start...")
-    
-    with col2:
-        st.subheader("📜 Previous Steps")
-        if st.session_state.step_history:
-            # Show last 3 steps
-            for step in reversed(st.session_state.step_history[-3:]):
-                st.markdown(f"""
-                <div class="step-indicator step-complete">
-                    ✓ {step.get('name', 'Completed step')}
-                </div>
-                """, unsafe_allow_html=True)
-        else:
-            st.info("No completed steps yet.")
-
-
-def render_subagent_activity():
-    """Render sub-agent spawning and activity."""
-    if st.session_state.subagent_activity:
-        with st.expander("🤖 Sub-Agent Activity", expanded=True):
-            for activity in st.session_state.subagent_activity[-5:]:  # Show last 5
-                agent_name = activity.get("agent", "Unknown")
-                action = activity.get("action", "running")
-                query = activity.get("query", "")
-                
-                if action == "spawned":
-                    st.markdown(f"🚀 **{agent_name}** spawned: _{query[:100]}..._" if len(query) > 100 else f"🚀 **{agent_name}** spawned: _{query}_")
-                elif action == "completed":
-                    st.markdown(f"✅ **{agent_name}** completed")
-                else:
-                    st.markdown(f"🔄 **{agent_name}**: {action}")
 
 
 def render_input_phase():
@@ -281,35 +216,9 @@ def process_agent_event(event: Dict[str, Any]):
 
 
 def render_research_phase():
-    """Render the research execution phase."""
-    st.markdown(f"## 🔬 Researching: _{st.session_state.research_query}_")
-    
-    # Layout: main content and sidebar panels
-    main_col, side_col = st.columns([2, 1])
-    
-    with side_col:
-        render_task_tracker()
-        st.divider()
-        render_subagent_activity()
-    
-    with main_col:
-        render_step_indicator()
-        
-        # Max iterations warning
-        if st.session_state.max_iterations_reached:
-            st.markdown("""
-            <div class="warning-banner">
-                ⚠️ <strong>Maximum iterations reached!</strong><br>
-                The research was stopped to prevent infinite loops. 
-                The quality of results may be affected.
-            </div>
-            """, unsafe_allow_html=True)
-        
-        st.divider()
-        
-        # Start research button
-        if st.button("🚀 Start Research", type="primary", disabled=st.session_state.iteration_count > 0):
-            run_research()
+    """Render the research execution phase - auto-starts research immediately."""
+    # Auto-start research immediately (no button needed)
+    run_research()
 
 
 def run_research():
@@ -318,8 +227,7 @@ def run_research():
     query = st.session_state.research_query
     config = get_agent_config()
     
-    with st.status("🔍 Deep Research in Progress...", expanded=True) as status:
-        st.write("Initializing agent...")
+    with st.status(f"🔍 Researching: {query}", expanded=True) as status:
         st.write(f"⏳ Using model: **{config['model']}** (may take 30-60 seconds per step)")
         
         # Create placeholders for live updates
@@ -377,14 +285,42 @@ def run_research():
                                     content = str(msg.content)
                                     all_content.append(content)
                                     
-                                    # Check if this is the final answer (has content but no tool calls)
-                                    has_tool_calls = hasattr(msg, 'tool_calls') and msg.tool_calls
-                                    if not has_tool_calls and len(content) > 200:
-                                        final_answer = content
-                                        st.session_state.todos[3]["status"] = "in_progress"
-                                        content_display.markdown(f"### 📝 Final Answer Preview\n\n{content[:1000]}...")
-                                    elif content:
-                                        st.write(f"💬 {content[:300]}...")
+                                    # FALLBACK: Try to parse various text output formats as final answer
+                                    # Some models output text instead of making proper tool calls
+                                    # Always try to extract and keep the longest/best answer
+                                    extracted = None
+                                    
+                                    # Try JSON format: {"answer": "..."}
+                                    if '"answer"' in content:
+                                        try:
+                                            import json
+                                            parsed = json.loads(content)
+                                            if isinstance(parsed, dict) and 'answer' in parsed:
+                                                extracted = parsed['answer']
+                                        except (json.JSONDecodeError, TypeError):
+                                            pass
+                                    
+                                    # Try text format: - Tool: submit_final_answer\n- Arguments:\n  - answer: ...
+                                    if extracted is None and 'submit_final_answer' in content and 'answer:' in content:
+                                        try:
+                                            import re
+                                            # Match various formats the model might use
+                                            match = re.search(r'answer:\s*\*?\*?(.+?)(?:\n\s*-\s*completed_tasks:|$)', content, re.DOTALL | re.IGNORECASE)
+                                            if match:
+                                                extracted = match.group(1).strip().strip('"\'*')
+                                        except Exception:
+                                            pass
+                                    
+                                    # Try markdown format: contains ### or ## headings and has substantial content
+                                    if extracted is None and ('###' in content or '## ' in content) and len(content) > 300:
+                                        extracted = content.strip()
+                                    
+                                    # Keep the longest extracted answer (better quality)
+                                    if extracted and len(extracted) > 200:
+                                        if final_answer is None or len(extracted) > len(final_answer):
+                                            final_answer = extracted
+                                            st.write(f"📝 Captured answer ({len(extracted)} chars)")
+                                            st.session_state.todos[3]["status"] = "in_progress"
                                     
                                     # Update task: analyzing complete
                                     if st.session_state.todos[0]["status"] == "in_progress":
@@ -408,6 +344,15 @@ def run_research():
                                             reflection = tool_args.get('reflection', '')[:200]
                                             st.write(f"🧠 Think #{think_count}: {reflection}...")
                                             st.session_state.todos[2]["status"] = "in_progress"
+                                        
+                                        # Track submit_final_answer - capture the answer even if rejected
+                                        if tool_name == "submit_final_answer":
+                                            st.write(f"📝 Submitting final answer...")
+                                            st.session_state.todos[3]["status"] = "in_progress"
+                                            # Capture the submitted answer as a fallback
+                                            submitted_answer = tool_args.get('answer', '')
+                                            if submitted_answer and (final_answer is None or len(submitted_answer) > len(final_answer or '')):
+                                                final_answer = submitted_answer
                                 
                                 # Update stats
                                 stats_placeholder.info(f"📊 Searches: {search_count} | Reflections: {think_count} | Events: {event_count}")
@@ -417,9 +362,25 @@ def run_research():
                             messages = value.get("messages", [])
                             for msg in messages:
                                 if hasattr(msg, 'content') and msg.content:
-                                    content_preview = str(msg.content)[:200]
-                                    st.write(f"📄 Result: {content_preview}...")
-                                    search_results.append(str(msg.content))
+                                    tool_result = str(msg.content)
+                                    
+                                    # Check if this is the accepted final answer
+                                    if 'FINAL_ANSWER_ACCEPTED' in tool_result:
+                                        st.success("✅ Final answer accepted!")
+                                        # Extract the answer from the tool result
+                                        if '---ANSWER---' in tool_result:
+                                            final_answer = tool_result.split('---ANSWER---')[1].strip()
+                                            content_display.markdown(f"### 📝 Final Answer\n\n{final_answer[:2000]}...")
+                                        else:
+                                            final_answer = tool_result
+                                        st.session_state.todos[3]["status"] = "complete"
+                                    elif 'SUBMISSION_REJECTED' in tool_result:
+                                        st.warning(f"⚠️ Submission rejected: {tool_result[:200]}...")
+                                    else:
+                                        content_preview = tool_result[:200]
+                                        st.write(f"📄 Result: {content_preview}...")
+                                    
+                                    search_results.append(tool_result)
                         
                         # Update step tracking
                         st.session_state.step_history.append(st.session_state.current_step or {})
@@ -440,11 +401,24 @@ def run_research():
                 for todo in st.session_state.todos:
                     todo["status"] = "complete"
                 
-                # Build final report from all captured content
-                # Use the explicitly captured final_answer, or fall back to last content
-                if final_answer is None and all_content:
+                # Build final report from the accepted final answer
+                # Look for FINAL_ANSWER_ACCEPTED in search_results (tool outputs)
+                accepted_answer = None
+                for result in search_results:
+                    if 'FINAL_ANSWER_ACCEPTED' in result and '---ANSWER---' in result:
+                        accepted_answer = result.split('---ANSWER---')[1].strip()
+                        break
+                
+                # Fall back to final_answer variable or longest content
+                if accepted_answer:
+                    final_answer = accepted_answer
+                elif final_answer is None and all_content:
                     # Find the longest content as the likely final answer
                     final_answer = max(all_content, key=len) if all_content else "No answer generated."
+                
+                # Always build a report, even if answer wasn't formally accepted
+                if final_answer is None:
+                    final_answer = "Research completed but no final answer was generated. Check the event log for details."
                 
                 if final_answer:
                     # Build comprehensive report
@@ -454,22 +428,23 @@ def run_research():
                     report += f"## Answer\n\n{final_answer}\n\n"
                     
                     if search_results:
-                        report += f"## Sources Consulted ({len(search_results)} total)\n\n"
-                        # Extract URLs from search results
+                        # Extract URLs from search results (excluding the final answer result)
                         urls_found = []
                         for result in search_results:
-                            if "URL:" in result:
+                            if "URL:" in result and 'FINAL_ANSWER_ACCEPTED' not in result:
                                 for line in result.split('\n'):
                                     if 'URL:' in line:
                                         urls_found.append(line.strip())
-                        for i, url in enumerate(urls_found[:10], 1):
-                            report += f"{i}. {url}\n"
+                        if urls_found:
+                            report += f"## Sources Consulted ({len(urls_found)} URLs found)\n\n"
+                            for i, url in enumerate(urls_found[:15], 1):
+                                report += f"{i}. {url}\n"
                     
                     st.session_state.final_report = report
-                    st.success(f"✅ Research complete! {search_count} searches, {len(all_content)} responses captured.")
+                    st.success(f"✅ Research complete! {search_count} searches, {think_count} reflections.")
                 else:
-                    st.session_state.final_report = "No final answer was generated. Please try again."
-                    st.warning("⚠️ No final answer captured. The model may not have concluded properly.")
+                    st.session_state.final_report = "No final answer was generated. The agent may not have used submit_final_answer tool properly."
+                    st.warning("⚠️ No final answer captured. The agent should use submit_final_answer tool.")
                 
                 # Mark as complete
                 st.session_state.current_phase = "complete"
@@ -486,38 +461,38 @@ def run_research():
                     st.error(f"Error during research: {error_msg}")
                     import traceback
                     st.code(traceback.format_exc())
+                    st.session_state.current_phase = "complete"  # Still transition to show what we have
                     status.update(label="❌ Research Failed", state="error", expanded=True)
                     break
         
-        st.rerun()
+        # Only rerun if we successfully transitioned to complete phase
+        if st.session_state.current_phase == "complete":
+            st.rerun()
 
 
 def render_completion_phase():
     """Render the results and final report."""
     st.markdown("## 📊 Research Results")
     
+    # Show the original query
+    st.markdown(f"**Query:** {st.session_state.research_query}")
+    
     # Max iterations warning
     if st.session_state.max_iterations_reached:
         st.warning("⚠️ **Note:** Maximum iterations were reached during research. Results may be incomplete.")
     
-    # Display final report
-    if st.session_state.final_report:
-        st.markdown("### 📄 Final Report")
-        st.markdown(st.session_state.final_report)
-    elif "/final_report.md" in st.session_state.agent_files:
-        st.markdown("### 📄 Final Report")
-        st.markdown(st.session_state.agent_files["/final_report.md"])
-    else:
-        st.info("No final report was generated. Check the agent files below.")
-    
     st.divider()
     
-    # Display agent files
-    if st.session_state.agent_files:
-        with st.expander("📁 Agent Files"):
-            for filename, content in st.session_state.agent_files.items():
-                st.markdown(f"**{filename}**")
-                st.code(content[:1000] if len(content) > 1000 else content, language="markdown")
+    # Display final report prominently
+    if st.session_state.final_report:
+        st.markdown(st.session_state.final_report)
+    elif "/final_report.md" in st.session_state.agent_files:
+        st.markdown(st.session_state.agent_files["/final_report.md"])
+    else:
+        st.error("❌ No final report was generated.")
+        st.info("The agent may not have completed properly. Check the progress history below for details.")
+    
+    st.divider()
     
     # Research statistics
     col1, col2, col3 = st.columns(3)
@@ -527,6 +502,26 @@ def render_completion_phase():
         st.metric("Tasks Completed", len([t for t in st.session_state.todos if t.get("status") == "complete"]))
     with col3:
         st.metric("Sub-Agents Used", len(st.session_state.subagent_activity))
+    
+    # Progress history expander
+    with st.expander("📜 Research Progress History", expanded=False):
+        if st.session_state.step_history:
+            for i, step in enumerate(st.session_state.step_history):
+                if step:
+                    step_name = step.get('name', 'Unknown')
+                    step_desc = step.get('description', '')[:100]
+                    st.markdown(f"**Step {i+1}:** {step_name}")
+                    if step_desc:
+                        st.caption(step_desc)
+        else:
+            st.info("No step history recorded.")
+    
+    # Display agent files if any
+    if st.session_state.agent_files:
+        with st.expander("📁 Agent Files", expanded=False):
+            for filename, content in st.session_state.agent_files.items():
+                st.markdown(f"**{filename}**")
+                st.code(content[:1000] if len(content) > 1000 else content, language="markdown")
     
     st.divider()
     

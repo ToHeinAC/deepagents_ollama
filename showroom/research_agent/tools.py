@@ -6,6 +6,7 @@ using Tavily for URL discovery and fetching full webpage content.
 """
 
 import os
+import re
 import httpx
 from langchain_core.tools import InjectedToolArg, tool
 from markdownify import markdownify
@@ -112,3 +113,112 @@ def think_tool(reflection: str) -> str:
         Confirmation that reflection was recorded for decision-making
     """
     return f"Reflection recorded: {reflection}"
+
+
+def _count_words(text: str) -> int:
+    """Count words in text."""
+    return len(text.split())
+
+def _count_urls(text: str) -> int:
+    """Count unique URLs in text (http:// or https://).
+    
+    Matches URLs in various formats including:
+    - Plain URLs: https://example.com
+    - Markdown links: [text](https://example.com)
+    - Inline citations: (https://example.com)
+    - Bracketed: [https://example.com]
+    - With trailing punctuation: https://example.com.
+    """
+    # Match URLs - be permissive, capture everything after https?://
+    # until we hit whitespace or certain delimiters
+    urls = re.findall(r'https?://[^\s<>\"\']+', text)
+    
+    # Clean trailing punctuation that might be captured
+    cleaned_urls = []
+    for url in urls:
+        # Remove trailing punctuation that's likely not part of the URL
+        while url and url[-1] in ')],.:;!?\'"':
+            url = url[:-1]
+        if url:  # Only add non-empty URLs
+            cleaned_urls.append(url)
+    
+    return len(set(cleaned_urls))
+
+def _validate_final_answer(answer: str) -> tuple[bool, str]:
+    """Validate that the final answer meets quality requirements.
+    
+    Requirements:
+    - At least 300 words
+    - At least 5 unique source URLs
+    
+    Returns:
+        Tuple of (is_valid, error_message)
+    """
+    word_count = _count_words(answer)
+    url_count = _count_urls(answer)
+    
+    errors = []
+    
+    if word_count < 300:
+        errors.append(f"Answer has only {word_count} words (minimum: 300)")
+    
+    if url_count < 5:
+        errors.append(f"Answer has only {url_count} source URLs (minimum: 5)")
+    
+    if errors:
+        return False, "; ".join(errors)
+    
+    return True, f"Valid: {word_count} words, {url_count} source URLs"
+
+
+@tool(parse_docstring=True)
+def submit_final_answer(
+    answer: str,
+    completed_tasks: str,
+) -> str:
+    """Submit your final comprehensive answer to conclude the research session.
+    
+    CRITICAL: Only use this tool when ALL of the following conditions are met:
+    1. You have completed ALL tasks in your research plan
+    2. Your answer has AT LEAST 300 words
+    3. Your answer includes AT LEAST 5 source URLs (https://...)
+    4. You have thoroughly researched the topic from multiple angles
+    
+    SOURCE REQUIREMENT:
+    Include the full URL for each source you cite. Any citation format is acceptable
+    as long as the source URL is visible.
+    
+    If your answer does not meet these requirements, the submission will be REJECTED
+    and you must continue researching.
+    
+    Args:
+        answer: Your complete, well-structured final answer with source URLs.
+                Must be at least 300 words with at least 5 source URLs.
+        completed_tasks: A brief summary of all research tasks you completed
+                        (e.g., "1. Searched recent news, 2. Found expert analysis, 
+                        3. Gathered historical context, 4. Collected statistics, 
+                        5. Explored alternative perspectives")
+    
+    Returns:
+        Either confirmation of successful submission or rejection with reasons
+    """
+    is_valid, message = _validate_final_answer(answer)
+    
+    if not is_valid:
+        rejection_msg = f"SUBMISSION_REJECTED: {message}.\n\n"
+        rejection_msg += "IMPORTANT: You must include the full URL (https://...) for each source.\n"
+        rejection_msg += "Any citation format is fine, but the URL must be visible.\n\n"
+        rejection_msg += "Fix your answer and submit again."
+        return rejection_msg
+    
+    # Format the final answer with metadata
+    word_count = _count_words(answer)
+    url_count = _count_urls(answer)
+    
+    return f"""FINAL_ANSWER_ACCEPTED
+---METADATA---
+Word Count: {word_count}
+Sources: {url_count}
+Completed Tasks: {completed_tasks}
+---ANSWER---
+{answer}"""

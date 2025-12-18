@@ -23,7 +23,7 @@ from research_agent.prompts import (
     RESEARCH_WORKFLOW_INSTRUCTIONS,
     SUBAGENT_DELEGATION_INSTRUCTIONS,
 )
-from research_agent.tools import tavily_search, think_tool
+from research_agent.tools import tavily_search, think_tool, submit_final_answer
 
 # Load environment variables
 load_dotenv()
@@ -48,34 +48,64 @@ class AgentState(TypedDict):
 # System prompt combining workflow and researcher instructions
 SYSTEM_PROMPT = f"""You are a deep research assistant. Today's date is {current_date}.
 
-Your task is to thoroughly research the user's question using web search.
+Your task is to thoroughly research the user's question using web search and then submit a comprehensive final answer.
 
-WORKFLOW:
-1. Think about what you need to search for
-2. Use tavily_search to find relevant information  
-3. Use think_tool to reflect on what you found and decide next steps
-4. **You MUST perform at least 15-20 searches** before providing your final answer
-5. Explore multiple angles: news, analysis, expert opinions, data sources, historical context
-6. When you have comprehensive coverage from multiple sources, provide a detailed answer
+## AVAILABLE TOOLS
+1. **tavily_search**: Search the web for information
+2. **think_tool**: Reflect on findings and plan next steps (use after every 2-3 searches)
+3. **submit_final_answer**: Submit your final comprehensive answer (REQUIRED to end the session)
 
-RESEARCH DEPTH REQUIREMENTS:
-- **Minimum 15-20 different searches** covering different aspects of the topic
-- **Use think_tool after every 2-3 searches** to assess progress and plan next searches
-- **Only conclude when you have 10+ unique, high-quality sources**
-- **Your final answer MUST be 1500+ words** with detailed analysis and inline citations
-- DO NOT provide a final answer until you have completed at least 15 searches
+## RESEARCH WORKFLOW
+Follow this exact workflow:
 
-SEARCH STRATEGY:
+### Phase 1: Planning (1 think_tool call)
+- Create a research plan with 5-7 specific tasks
+- Identify key aspects to investigate
+
+### Phase 2: Research (15-20 searches minimum)
 - Search 1-3: Overview and recent news
-- Search 4-6: Expert analysis and opinions
+- Search 4-6: Expert analysis and opinions  
 - Search 7-9: Historical context and trends
 - Search 10-12: Data sources and statistics
 - Search 13-15: Contrarian views and alternative perspectives
 - Search 16-20: Deep dives into specific aspects discovered
 
-After each think_tool reflection, explicitly count how many searches you've done. If under 15, continue searching.
+### Phase 3: Reflection (think_tool after every 2-3 searches)
+- Track your search count explicitly
+- Assess what information you have vs. what's missing
+- Plan remaining searches
 
-Always cite your sources with URLs in [1], [2], [3] format.
+### Phase 4: Final Answer (MANDATORY - use submit_final_answer tool)
+**CRITICAL: You MUST use the submit_final_answer tool to end the research session.**
+DO NOT just write your answer as a message - the session will NOT end properly.
+
+## FINAL ANSWER REQUIREMENTS
+Before calling submit_final_answer, ensure your answer meets ALL requirements:
+- ✅ At least 1000 words (comprehensive, detailed analysis)
+- ✅ At least 5 unique citations [1], [2], [3], [4], [5]
+- ✅ All planned research tasks completed
+- ✅ Multiple perspectives covered
+- ✅ Well-structured with clear sections
+
+If submit_final_answer rejects your submission, you MUST:
+1. Continue researching to gather more information
+2. Expand your answer to meet the word count
+3. Add more citations from your sources
+4. Try submitting again
+
+## CITATION FORMAT
+Use inline citations: [1], [2], [3]
+End with a Sources section:
+### Sources
+[1] Title: URL
+[2] Title: URL
+...
+
+## IMPORTANT RULES
+- NEVER provide a final answer without using submit_final_answer tool
+- NEVER stop researching until you have 15+ searches and 5+ sources
+- ALWAYS use think_tool to track progress after every 2-3 searches
+- The research session ONLY ends when submit_final_answer is accepted
 """
 
 
@@ -89,7 +119,7 @@ def create_agent():
         temperature=0.0,
     )
     
-    tools = [tavily_search, think_tool]
+    tools = [tavily_search, think_tool, submit_final_answer]
     model_with_tools = model.bind_tools(tools)
     
     # Define the agent node
@@ -164,14 +194,60 @@ def create_agent():
             print(f"[ROUTER] Reached recursion limit, ending")
             return "end"
         
+        # Check if final answer was accepted (in tool results)
+        for msg in reversed(messages[-5:]):
+            if hasattr(msg, 'content') and isinstance(msg.content, str):
+                if 'FINAL_ANSWER_ACCEPTED' in msg.content:
+                    print(f"[ROUTER] Final answer accepted, ending research session")
+                    return "end"
+        
         # If last message has tool calls, continue to tools
         if last_message and hasattr(last_message, 'tool_calls') and last_message.tool_calls:
+            # Check if it's a submit_final_answer call - route to tools for validation
+            for tc in last_message.tool_calls:
+                if tc.get('name') == 'submit_final_answer':
+                    print(f"[ROUTER] Final answer submission detected, routing to tools for validation")
             print(f"[ROUTER] Has tool calls, routing to tools")
             return "tools"
         
-        # Otherwise, we're done
-        print(f"[ROUTER] No tool calls, ending")
-        return "end"
+        # FALLBACK: If agent outputs substantial markdown content, accept it as final answer
+        # This handles models that don't properly use tool calls
+        if last_message and hasattr(last_message, 'content') and last_message.content:
+            content = str(last_message.content)
+            # Check if it looks like a final answer (has headings and substantial length)
+            if ('###' in content or '## ' in content) and len(content) > 500:
+                print(f"[ROUTER] Agent output substantial markdown answer ({len(content)} chars), accepting as final")
+                return "end"
+        
+        # If no tool calls but no accepted final answer, force agent to use submit_final_answer
+        # But limit remind attempts to avoid infinite loops
+        remind_count = sum(1 for msg in messages if hasattr(msg, 'content') and 'CRITICAL ERROR' in str(msg.content))
+        if remind_count >= 3:
+            print(f"[ROUTER] Already reminded {remind_count} times, ending to avoid loop")
+            return "end"
+        
+        print(f"[ROUTER] No tool calls and no accepted final answer - agent should use submit_final_answer tool")
+        return "continue_without_answer"
+    
+    # Node to remind agent to use submit_final_answer
+    def remind_to_submit(state: AgentState) -> Dict[str, Any]:
+        """Remind the agent that it must use submit_final_answer tool."""
+        print(f"\n[REMIND] Agent tried to end without using submit_final_answer tool")
+        reminder = HumanMessage(content="""CRITICAL ERROR: You wrote your answer as text instead of using the submit_final_answer tool.
+
+You MUST make a TOOL CALL to submit_final_answer. Do NOT write JSON or text.
+
+Call the tool like this:
+- Tool: submit_final_answer
+- Arguments:
+  - answer: Your complete answer (300+ words, 5+ source URLs)
+  - completed_tasks: Summary of what you researched
+
+DO NOT output JSON text. Make an actual tool call to submit_final_answer NOW.""")
+        return {
+            "messages": [reminder],
+            "iteration_count": state.get("iteration_count", 0) + 1,
+        }
     
     # Build the graph
     workflow = StateGraph(AgentState)
@@ -179,6 +255,7 @@ def create_agent():
     # Add nodes
     workflow.add_node("agent", agent_node)
     workflow.add_node("tools", ToolNode(tools))
+    workflow.add_node("remind", remind_to_submit)
     
     # Add edges
     workflow.add_edge(START, "agent")
@@ -187,10 +264,12 @@ def create_agent():
         should_continue,
         {
             "tools": "tools",
+            "continue_without_answer": "remind",
             "end": END,
         }
     )
     workflow.add_edge("tools", "agent")
+    workflow.add_edge("remind", "agent")
     
     # Compile
     return workflow.compile()
