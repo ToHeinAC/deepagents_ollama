@@ -14,6 +14,17 @@ from tavily import TavilyClient
 from typing_extensions import Annotated, Literal
 from dotenv import load_dotenv
 
+# Import memory management utilities
+try:
+    from memory_utils import clear_cuda_memory
+except ImportError:
+    # Fallback if module not found
+    def clear_cuda_memory(verbose=True):
+        import gc
+        gc.collect()
+        if verbose:
+            print("[MEMORY] Garbage collection completed (fallback)")
+
 # Load environment variables
 load_dotenv()
 
@@ -84,6 +95,9 @@ def tavily_search(
             
         content.append(f"Title: {title}\nURL: {url}\nContent: {raw_content}\n")
         
+    # Clear memory after search to prevent VRAM accumulation
+    clear_cuda_memory(verbose=True)
+    
     return "\n---\n".join(content)
 
 
@@ -112,6 +126,9 @@ def think_tool(reflection: str) -> str:
     Returns:
         Confirmation that reflection was recorded for decision-making
     """
+    # Clear memory after reflection to free resources
+    clear_cuda_memory(verbose=True)
+    
     return f"Reflection recorded: {reflection}"
 
 
@@ -202,9 +219,11 @@ def submit_final_answer(
     Returns:
         Either confirmation of successful submission or rejection with reasons
     """
+    print(f"[SUBMIT] Validating final answer ({len(answer)} chars)...")
     is_valid, message = _validate_final_answer(answer)
     
     if not is_valid:
+        print(f"[SUBMIT] REJECTED: {message}")
         rejection_msg = f"SUBMISSION_REJECTED: {message}.\n\n"
         rejection_msg += "IMPORTANT: You must include the full URL (https://...) for each source.\n"
         rejection_msg += "Any citation format is fine, but the URL must be visible.\n\n"
@@ -214,6 +233,11 @@ def submit_final_answer(
     # Format the final answer with metadata
     word_count = _count_words(answer)
     url_count = _count_urls(answer)
+    
+    print(f"[SUBMIT] ACCEPTED: {word_count} words, {url_count} URLs")
+    
+    # Clear memory before returning final answer
+    clear_cuda_memory(verbose=True)
     
     return f"""FINAL_ANSWER_ACCEPTED
 ---METADATA---

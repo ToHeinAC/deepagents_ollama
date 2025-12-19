@@ -13,6 +13,19 @@ from typing import Annotated, TypedDict, List, Dict, Any
 from dotenv import load_dotenv
 
 from langchain_ollama import ChatOllama
+
+# Import memory management utilities
+try:
+    from memory_utils import clear_cuda_memory, get_memory_stats
+except ImportError:
+    # Fallback if module not found
+    import gc
+    def clear_cuda_memory(verbose=True):
+        gc.collect()
+        if verbose:
+            print("[MEMORY] Garbage collection completed (fallback)")
+    def get_memory_stats():
+        return None
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage, BaseMessage
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
@@ -140,6 +153,9 @@ def create_agent():
         
         print(f"[AGENT] Invoking model: {OLLAMA_MODEL}")
         
+        # Clear memory before model invocation to ensure resources available
+        clear_cuda_memory(verbose=True)
+        
         # Get model response with retry for empty responses
         max_retries = 3
         for attempt in range(max_retries):
@@ -174,6 +190,9 @@ def create_agent():
         if not (has_content or has_tools):
             print("[AGENT] All retries exhausted, using fallback response")
             response = AIMessage(content="I apologize, but I'm having trouble processing this request. Please try rephrasing your question.")
+        
+        # Clear memory after model invocation
+        clear_cuda_memory(verbose=True)
         
         return {
             "messages": [response],

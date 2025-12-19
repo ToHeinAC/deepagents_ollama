@@ -15,6 +15,19 @@ from datetime import datetime
 from typing import Dict, Any, Optional
 from dotenv import load_dotenv
 
+# Import memory management utilities
+try:
+    from memory_utils import clear_cuda_memory, get_memory_stats
+except ImportError:
+    # Fallback if module not found
+    import gc
+    def clear_cuda_memory(verbose=True):
+        gc.collect()
+        if verbose:
+            print("[MEMORY] Garbage collection completed (fallback)")
+    def get_memory_stats():
+        return None
+
 # Load environment variables
 load_dotenv()
 
@@ -129,6 +142,17 @@ def render_sidebar():
         st.metric("Phase", st.session_state.current_phase.upper())
         st.metric("Iteration Count", st.session_state.iteration_count)
         
+        # Memory stats display
+        mem_stats = get_memory_stats()
+        if mem_stats:
+            st.subheader("Memory")
+            if mem_stats.get("backend") == "cuda":
+                st.metric("GPU Allocated", f"{mem_stats.get('allocated_mb', 0):.1f} MB")
+            elif mem_stats.get("backend") == "mps":
+                st.caption("Apple Silicon (MPS) detected")
+            else:
+                st.caption(mem_stats.get("note", "CPU mode"))
+        
         if st.session_state.max_iterations_reached:
             st.warning("⚠️ Max iterations reached!")
         
@@ -145,9 +169,15 @@ def render_sidebar():
             })
         
         if st.button("🔄 Reset Session"):
+            # Clear GPU memory before resetting
+            clear_cuda_memory(verbose=True)
             for key in list(st.session_state.keys()):
                 del st.session_state[key]
             st.rerun()
+        
+        if st.button("🧹 Clear GPU Memory"):
+            clear_cuda_memory(verbose=True)
+            st.success("GPU memory cleared!")
 
 
 

@@ -125,7 +125,7 @@ If submit_final_answer REJECTS your submission, you MUST:
 </Final Answer Requirements>
 
 <Source Format>
-**CRITICAL: You MUST copy the actual URLs from your search results into your final answer.**
+**CRITICAL: You MUST copy the actual URLs from your search results into your final answer. Make sure to INCLUDE INLINE URLcitations.**
 
 When you use tavily_search, each result contains a URL like:
 "URL: https://finance.yahoo.com/news/bitcoin-etf-outflows..."
@@ -135,6 +135,7 @@ You MUST copy these URLs into your final answer. Do NOT paraphrase or omit them.
 Examples of valid formats:
 - "Bitcoin ETF outflows reached $900M (Source: https://finance.yahoo.com/news/bitcoin-etf-outflows)"
 - "According to Yahoo Finance [https://finance.yahoo.com/news/bitcoin-etf-outflows], Bitcoin fell."
+- "As stated in https://finance.yahoo.com/news/bitcoin-etf-outflows, Bitcoin fell."
 
 **Your answer will be REJECTED if it does not contain at least 5 URLs (https://...)**
 </Source Format>
