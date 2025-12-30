@@ -138,7 +138,7 @@ def render_sidebar():
         
         # Timeout & Limits Settings
         with st.expander("⏱️ Timeouts & Limits", expanded=True):
-            stream_timeout = st.slider("Session Timeout (min)", 1, 15, 5, help="Max time for entire research session")
+            stream_timeout = st.slider("Session Timeout (min)", 5, 60, 30, help="Max time for entire research session")
             os.environ["AGENT_STREAM_TIMEOUT_S"] = str(stream_timeout * 60)
             
             model_timeout = st.slider("Model Timeout (sec)", 30, 600, 300, help="Max time per Ollama model call")
@@ -634,27 +634,37 @@ def run_research():
                             url = next((line.replace('URL: ', '') for line in lines if line.startswith('URL:')), '')
                             content_line = next((line.replace('Content: ', '') for line in lines if line.startswith('Content:')), '')
                             if content_line and len(content_line) > 50:
-                                search_summaries.append(f"**{title}** ({url})\n{content_line[:400]}...")
+                                # Keep full content, only truncate if extremely long (>2000 chars)
+                                if len(content_line) > 2000:
+                                    content_display = content_line[:2000] + "..."
+                                else:
+                                    content_display = content_line
+                                search_summaries.append(f"**{title}** ({url})\n{content_display}")
                     
                     for step in research_steps:
                         if step.get('type') == 'reflection' and step.get('content'):
-                            reflection_summaries.append(step['content'][:300] + '...' if len(step['content']) > 300 else step['content'])
+                            # Keep full reflection content, only truncate if extremely long (>1500 chars)
+                            content = step['content']
+                            if len(content) > 1500:
+                                reflection_summaries.append(content[:1500] + "...")
+                            else:
+                                reflection_summaries.append(content)
                     
                     # Build comprehensive answer from extracted content
                     if search_summaries or reflection_summaries:
                         answer_parts = [f"# Analysis of: {st.session_state.research_query}\n"]
                         
                         if search_summaries:
-                            answer_parts.append("## Key Research Findings\n")
-                            for i, summary in enumerate(search_summaries[:5], 1):
+                            answer_parts.append("## Key Research Findings\n\n")
+                            for i, summary in enumerate(search_summaries[:7], 1):  # Show up to 7 searches
                                 answer_parts.append(f"{i}. {summary}\n\n")
                         
                         if reflection_summaries:
-                            answer_parts.append("## Analysis & Insights\n")
-                            for i, reflection in enumerate(reflection_summaries[:3], 1):
+                            answer_parts.append("## Analysis & Insights\n\n")
+                            for i, reflection in enumerate(reflection_summaries[:5], 1):  # Show up to 5 reflections
                                 answer_parts.append(f"**Insight {i}:** {reflection}\n\n")
                         
-                        answer_parts.append(f"\n*Research completed with {search_count} searches and {think_count} reflections.*")
+                        answer_parts.append(f"\n---\n\n*Research completed with {search_count} searches and {think_count} reflections. Full content preserved from all sources.*")
                         final_answer = ''.join(answer_parts)
                     else:
                         final_answer = max(all_content, key=len) if all_content else "Research completed but no final answer was generated. Check the event log for details."
