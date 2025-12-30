@@ -8,6 +8,7 @@ using Tavily for URL discovery and fetching full webpage content.
 import os
 import re
 import httpx
+import concurrent.futures
 from langchain_core.tools import InjectedToolArg, tool
 from markdownify import markdownify
 from tavily import TavilyClient
@@ -74,12 +75,22 @@ def tavily_search(
     Returns:
         Formatted search results with full webpage content
     """
-    # Use Tavily to search
-    response = tavily_client.search(
-        query,
-        max_results=max_results,
-        topic=topic,
-    )
+    tavily_timeout_s = float(os.getenv("TAVILY_SEARCH_TIMEOUT_S", "30"))
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            fut = executor.submit(
+                tavily_client.search,
+                query,
+                max_results=max_results,
+                topic=topic,
+            )
+            response = fut.result(timeout=tavily_timeout_s)
+    except concurrent.futures.TimeoutError:
+        clear_cuda_memory(verbose=True)
+        return f"TAVILY_SEARCH_ERROR: Timeout after {tavily_timeout_s}s for query: {query}"
+    except Exception as e:
+        clear_cuda_memory(verbose=True)
+        return f"TAVILY_SEARCH_ERROR: {type(e).__name__}: {e}"
 
     # Fetch full content for each URL
     # Process results

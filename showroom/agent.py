@@ -8,11 +8,16 @@ Uses local Ollama LLM with proper tool binding.
 """
 
 import os
+import concurrent.futures
 from datetime import datetime
-from typing import Annotated, TypedDict, List, Dict, Any
-from dotenv import load_dotenv
-
+from typing import Dict, Any, List, TypedDict, Annotated
+from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
+from langgraph.graph.message import add_messages
 from langchain_ollama import ChatOllama
+from langchain_core.tools import tool
+from langgraph.graph import StateGraph, START, END
+from langgraph.prebuilt import ToolNode
+from dotenv import load_dotenv
 
 # Import memory management utilities
 try:
@@ -26,10 +31,6 @@ except ImportError:
             print("[MEMORY] Garbage collection completed (fallback)")
     def get_memory_stats():
         return None
-from langchain_core.messages import HumanMessage, AIMessage, ToolMessage, BaseMessage
-from langgraph.graph import StateGraph, START, END
-from langgraph.graph.message import add_messages
-from langgraph.prebuilt import ToolNode
 
 from research_agent.prompts import (
     RESEARCHER_INSTRUCTIONS,
@@ -156,11 +157,23 @@ def create_agent():
         # Clear memory before model invocation to ensure resources available
         clear_cuda_memory(verbose=True)
         
-        # Get model response with retry for empty responses
+        # Get model response with retry for empty responses and timeout protection
         max_retries = 3
+        model_timeout_s = float(os.getenv("OLLAMA_TIMEOUT_S", "300"))  # 5 minutes per model call
+        
         for attempt in range(max_retries):
             try:
-                response = model_with_tools.invoke(messages)
+                # Use ThreadPoolExecutor to add timeout to model invocation
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(model_with_tools.invoke, messages)
+                    try:
+                        response = future.result(timeout=model_timeout_s)
+                    except concurrent.futures.TimeoutError:
+                        print(f"[AGENT] Model invocation timeout after {model_timeout_s}s, attempt {attempt+1}")
+                        if attempt == max_retries - 1:
+                            response = AIMessage(content="Model invocation timed out. Please try a simpler query or check your Ollama server.")
+                            break
+                        continue
                 
                 # Check if response has content or tool calls
                 has_content = hasattr(response, 'content') and response.content
@@ -204,14 +217,44 @@ def create_agent():
         """Determine if we should continue or end."""
         messages = state["messages"]
         last_message = messages[-1] if messages else None
+        iteration_count = state.get("iteration_count", 0)
         
         print(f"\n[ROUTER] Checking routing decision...")
-        print(f"[ROUTER] Iteration count: {state.get('iteration_count', 0)}")
+        print(f"[ROUTER] Iteration count: {iteration_count}")
+        
+        # Count searches and reflections to determine if we have enough content
+        search_count = sum(1 for msg in messages if hasattr(msg, 'tool_calls') and msg.tool_calls and 
+                          any(tc.get('name') == 'tavily_search' for tc in msg.tool_calls))
+        think_count = sum(1 for msg in messages if hasattr(msg, 'tool_calls') and msg.tool_calls and 
+                         any(tc.get('name') == 'think_tool' for tc in msg.tool_calls))
+        
+        print(f"[ROUTER] Search count: {search_count}, Think count: {think_count}")
+        
+        # Check for model timeout patterns in recent messages
+        timeout_count = sum(1 for msg in messages[-5:] if hasattr(msg, 'content') and 
+                           'Model invocation timeout' in str(msg.content))
         
         # Check iteration limit
-        if state.get("iteration_count", 0) >= RECURSION_LIMIT:
+        if iteration_count >= RECURSION_LIMIT:
             print(f"[ROUTER] Reached recursion limit, ending")
+            # Store termination reason
+            state["termination_reason"] = f"⚠️ Maximum iterations reached ({RECURSION_LIMIT})"
             return "end"
+        
+        # FORCED SUBMISSION: If we have sufficient research but no submission attempts
+        submit_attempts = sum(1 for msg in messages if hasattr(msg, 'tool_calls') and msg.tool_calls and 
+                             any(tc.get('name') == 'submit_final_answer' for tc in msg.tool_calls))
+        
+        if (search_count >= 5 and think_count >= 2 and submit_attempts == 0 and iteration_count >= 15):
+            print(f"[ROUTER] Sufficient research completed ({search_count} searches, {think_count} thinks) but no submission - forcing submission")
+            state["termination_reason"] = f"🔄 Forced submission after sufficient research ({search_count} searches, {think_count} reflections)"
+            return "force_submit"
+        
+        # Check for repeated model timeouts
+        if timeout_count >= 3:
+            print(f"[ROUTER] Multiple model timeouts detected ({timeout_count}), forcing submission")
+            state["termination_reason"] = f"⚠️ Multiple model timeouts ({timeout_count} timeouts in recent iterations)"
+            return "force_submit"
         
         # Check if final answer was accepted (in tool results)
         for msg in reversed(messages[-5:]):
@@ -243,7 +286,14 @@ def create_agent():
         remind_count = sum(1 for msg in messages if hasattr(msg, 'content') and 'CRITICAL ERROR' in str(msg.content))
         if remind_count >= 3:
             print(f"[ROUTER] Already reminded {remind_count} times, ending to avoid loop")
+            state["termination_reason"] = f"⚠️ Too many reminder attempts ({remind_count} reminders) - agent not responding properly"
             return "end"
+        
+        # Additional check: if we have many iterations without submission, force it
+        if iteration_count >= 18 and submit_attempts == 0:
+            print(f"[ROUTER] High iteration count ({iteration_count}) with no submission attempts - forcing submission")
+            state["termination_reason"] = f"⚠️ High iteration count without submission ({iteration_count} iterations, {search_count} searches)"
+            return "force_submit"
         
         print(f"[ROUTER] No tool calls and no accepted final answer - agent should use submit_final_answer tool")
         return "continue_without_answer"
@@ -268,6 +318,60 @@ DO NOT output JSON text. Make an actual tool call to submit_final_answer NOW."""
             "iteration_count": state.get("iteration_count", 0) + 1,
         }
     
+    # Node to force final answer submission when agent gets stuck
+    def force_submit_answer(state: AgentState) -> Dict[str, Any]:
+        """Force submission of final answer when agent has done enough research but won't submit."""
+        print(f"\n[FORCE_SUBMIT] Forcing final answer submission after sufficient research")
+        
+        # Extract content from tool results to build an answer
+        search_results = []
+        reflections = []
+        
+        for msg in state["messages"]:
+            if hasattr(msg, 'content') and isinstance(msg.content, str):
+                content = msg.content
+                if 'Title:' in content and 'URL:' in content:
+                    search_results.append(content)
+                elif 'Reflection recorded:' in content:
+                    reflections.append(content.replace('Reflection recorded: ', ''))
+        
+        # Build a comprehensive answer from the research
+        answer_parts = []
+        if search_results:
+            answer_parts.append("Based on my research, here are the key findings:")
+            for i, result in enumerate(search_results[:5], 1):
+                lines = result.split('\n')
+                title = next((line.replace('Title: ', '') for line in lines if line.startswith('Title:')), 'Unknown')
+                url = next((line.replace('URL: ', '') for line in lines if line.startswith('URL:')), '')
+                content_line = next((line.replace('Content: ', '') for line in lines if line.startswith('Content:')), '')
+                if content_line:
+                    answer_parts.append(f"\n{i}. **{title}** ({url})\n{content_line[:300]}...")
+        
+        if reflections:
+            answer_parts.append("\n\n**Analysis:**")
+            answer_parts.extend(f"\n- {refl[:200]}..." for refl in reflections[:3])
+        
+        forced_answer = ''.join(answer_parts) if answer_parts else "Research completed with multiple searches and analysis, but detailed findings are available in the search results."
+        
+        # Create a forced submission message
+        forced_submission = AIMessage(
+            content="",
+            tool_calls=[{
+                'name': 'submit_final_answer',
+                'args': {
+                    'answer': forced_answer,
+                    'completed_tasks': f"Completed {len(search_results)} searches and {len(reflections)} reflections on the research topic."
+                },
+                'id': 'forced_submit_001',
+                'type': 'tool_call'
+            }]
+        )
+        
+        return {
+            "messages": [forced_submission],
+            "iteration_count": state.get("iteration_count", 0) + 1,
+        }
+    
     # Build the graph
     workflow = StateGraph(AgentState)
     
@@ -275,6 +379,7 @@ DO NOT output JSON text. Make an actual tool call to submit_final_answer NOW."""
     workflow.add_node("agent", agent_node)
     workflow.add_node("tools", ToolNode(tools))
     workflow.add_node("remind", remind_to_submit)
+    workflow.add_node("force_submit", force_submit_answer)
     
     # Add edges
     workflow.add_edge(START, "agent")
@@ -284,11 +389,13 @@ DO NOT output JSON text. Make an actual tool call to submit_final_answer NOW."""
         {
             "tools": "tools",
             "continue_without_answer": "remind",
+            "force_submit": "force_submit",
             "end": END,
         }
     )
     workflow.add_edge("tools", "agent")
     workflow.add_edge("remind", "agent")
+    workflow.add_edge("force_submit", "tools")  # Route forced submission through tools for validation
     
     # Compile
     return workflow.compile()
@@ -308,15 +415,9 @@ def get_agent():
 
 
 def get_agent_config():
-    """Get the current agent configuration.
-    
-    Returns:
-        Dictionary with current configuration settings.
-    """
+    """Get agent configuration for display."""
     return {
         "model": OLLAMA_MODEL,
         "base_url": OLLAMA_BASE_URL,
-        "max_concurrent_research_units": MAX_CONCURRENT_RESEARCH_UNITS,
-        "max_researcher_iterations": MAX_RESEARCHER_ITERATIONS,
         "recursion_limit": RECURSION_LIMIT,
     }

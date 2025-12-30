@@ -11,7 +11,9 @@ import streamlit as st
 import os
 import sys
 import time
-from datetime import datetime
+import threading
+import signal
+from datetime import datetime, timedelta
 from typing import Dict, Any, Optional
 from dotenv import load_dotenv
 
@@ -116,6 +118,12 @@ def initialize_session_state():
     
     if "research_steps" not in st.session_state:
         st.session_state.research_steps = []  # Store detailed research steps for display
+    
+    if "research_progress" not in st.session_state:
+        st.session_state.research_progress = {}  # Persist progress across refreshes
+    
+    if "early_termination_enabled" not in st.session_state:
+        st.session_state.early_termination_enabled = True
 
 
 def render_sidebar():
@@ -125,61 +133,114 @@ def render_sidebar():
         
         config = get_agent_config()
         
-        st.subheader("Model Settings")
-        st.info(f"**Model:** {config['model']}")
-        st.caption(f"Base URL: {config['base_url']}")
+        # Basic Model Info (always visible)
+        st.write(f"🤖 **{config['model']}** @ `{config['base_url']}`")
         
-        st.divider()
+        # Timeout & Limits Settings
+        with st.expander("⏱️ Timeouts & Limits", expanded=True):
+            stream_timeout = st.slider("Session Timeout (min)", 1, 15, 5, help="Max time for entire research session")
+            os.environ["AGENT_STREAM_TIMEOUT_S"] = str(stream_timeout * 60)
+            
+            model_timeout = st.slider("Model Timeout (sec)", 30, 600, 300, help="Max time per Ollama model call")
+            os.environ["OLLAMA_TIMEOUT_S"] = str(model_timeout)
+            
+            tavily_timeout = st.slider("Search Timeout (sec)", 10, 60, 30, help="Max time per web search")
+            os.environ["TAVILY_SEARCH_TIMEOUT_S"] = str(tavily_timeout)
+            
+            max_iterations = st.slider("Max Iterations", 20, 200, config['recursion_limit'], help="Max agent-tool cycles")
+            os.environ["RECURSION_LIMIT"] = str(max_iterations)
         
-        st.subheader("Agent Limits")
-        st.metric("Max Concurrent Sub-Agents", config['max_concurrent_research_units'])
-        st.metric("Max Research Iterations", config['max_researcher_iterations'])
-        st.metric("Recursion Limit", config['recursion_limit'])
+        # Research Quality Settings
+        with st.expander("🎯 Research Quality"):
+            st.session_state.early_termination_enabled = st.checkbox(
+                "Smart Early Stop", 
+                value=st.session_state.early_termination_enabled,
+                help="Stop when sufficient research quality is reached"
+            )
+            
+            st.checkbox(
+                "Force Final Answer", 
+                value=True,
+                help="Auto-submit when research thresholds met (always enabled)",
+                disabled=True
+            )
         
-        st.divider()
+        # Current Session Status
+        with st.expander("📊 Session Status", expanded=True):
+            st.write(f"**Phase:** {st.session_state.current_phase.upper()}")
+            st.write(f"**Iterations:** {st.session_state.iteration_count}")
+            
+            if st.session_state.max_iterations_reached:
+                st.write("**Status:** ⚠️ MAX REACHED")
+                st.warning("⚠️ Max iterations reached!")
+            else:
+                st.write("**Status:** ✅ ACTIVE")
+            
+            # Show termination reason if available
+            if hasattr(st.session_state, 'termination_reason') and st.session_state.termination_reason:
+                st.write(f"**Termination Reason:** {st.session_state.termination_reason}")
+                if st.session_state.termination_reason.startswith("⚠️"):
+                    st.warning(st.session_state.termination_reason)
         
-        st.subheader("Current Session")
-        st.metric("Phase", st.session_state.current_phase.upper())
-        st.metric("Iteration Count", st.session_state.iteration_count)
-        
-        # Memory stats display
+        # Memory & System Info
         mem_stats = get_memory_stats()
         if mem_stats:
-            st.subheader("Memory")
-            if mem_stats.get("backend") == "cuda":
-                st.metric("GPU Allocated", f"{mem_stats.get('allocated_mb', 0):.1f} MB")
-            elif mem_stats.get("backend") == "mps":
-                st.caption("Apple Silicon (MPS) detected")
+            with st.expander("💾 System Resources"):
+                if mem_stats.get("backend") == "cuda":
+                    st.write(f"🔥 GPU: {mem_stats.get('allocated_mb', 0):.0f}MB allocated, {mem_stats.get('free_mb', 0):.0f}MB free")
+                else:
+                    st.write("💻 CPU Memory: Active")
+        
+        # Current Tasks (only during research)
+        if st.session_state.todos and st.session_state.current_phase == "research":
+            with st.expander("📋 Current Tasks", expanded=True):
+                for todo in st.session_state.todos:
+                    status_emoji = {"pending": "⏳", "in_progress": "🔄", "complete": "✅"}.get(todo["status"], "❓")
+                    st.write(f"{status_emoji} {todo['title']}")
+        
+        # Controls
+        with st.expander("🔧 Controls"):
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("Clear Progress", help="Clear cached research progress"):
+                    if "research_progress" in st.session_state:
+                        del st.session_state.research_progress
+                    st.success("Progress cleared!")
+                    st.rerun()
+            
+            with col2:
+                if st.button("🧹 Clear Memory", help="Clear GPU/CPU memory"):
+                    clear_cuda_memory(verbose=True)
+                    st.success("Memory cleared!")
+            
+            if st.button("🔄 Reset All", type="primary", help="Reset entire session"):
+                clear_cuda_memory(verbose=True)
+                for key in list(st.session_state.keys()):
+                    del st.session_state[key]
+                st.rerun()
+        
+        # Advanced Debug Info
+        with st.expander("🔧 Debug Info"):
+            st.write(f"**Phase:** {st.session_state.current_phase}")
+            st.write(f"**Iterations:** {st.session_state.iteration_count}")
+            st.write(f"**Max Reached:** {st.session_state.max_iterations_reached}")
+            
+            if st.session_state.research_progress:
+                st.write(f"**Progress Cached:** ✅ ({st.session_state.research_progress.get('search_count', 0)} searches)")
             else:
-                st.caption(mem_stats.get("note", "CPU mode"))
-        
-        if st.session_state.max_iterations_reached:
-            st.warning("⚠️ Max iterations reached!")
-        
-        st.divider()
-        
-        # Debug section
-        if st.checkbox("🔧 Show Debug Info"):
-            st.json({
-                "todos": st.session_state.todos,
-                "current_step": st.session_state.current_step,
-                "step_history_count": len(st.session_state.step_history),
-                "subagent_activity_count": len(st.session_state.subagent_activity),
-                "agent_files": list(st.session_state.agent_files.keys()),
-            })
-        
-        if st.button("🔄 Reset Session"):
-            # Clear GPU memory before resetting
-            clear_cuda_memory(verbose=True)
-            for key in list(st.session_state.keys()):
-                del st.session_state[key]
-            st.rerun()
-        
-        if st.button("🧹 Clear GPU Memory"):
-            clear_cuda_memory(verbose=True)
-            st.success("GPU memory cleared!")
-
-
+                st.write(f"**Progress Cached:** ❌")
+            
+            st.write(f"**Stream Timeout:** {os.environ.get('AGENT_STREAM_TIMEOUT_S', '300')}s")
+            st.write(f"**Model Timeout:** {os.environ.get('OLLAMA_TIMEOUT_S', '120')}s")
+            st.write(f"**Search Timeout:** {os.environ.get('TAVILY_SEARCH_TIMEOUT_S', '30')}s")
+            
+            if st.checkbox("Show Raw Debug Data"):
+                st.json({
+                    "todos": st.session_state.todos,
+                    "step_history_count": len(st.session_state.step_history),
+                    "subagent_activity_count": len(st.session_state.subagent_activity),
+                    "agent_files": list(st.session_state.agent_files.keys()),
+                })
 
 
 def render_input_phase():
@@ -245,6 +306,16 @@ def process_agent_event(event: Dict[str, Any]):
         max_iter = config["recursion_limit"]
         if st.session_state.iteration_count >= max_iter:
             st.session_state.max_iterations_reached = True
+            # Build partial report when max iterations reached
+            if not st.session_state.final_report and "research_progress" in st.session_state:
+                progress = st.session_state.research_progress
+                partial_answer = progress.get("final_answer") or "Research reached maximum iterations before completion."
+                st.session_state.final_report = (
+                    "# Research Report (Partial)\n\n"
+                    f"**Query:** {st.session_state.research_query}\n\n"
+                    "## Answer\n\n"
+                    f"{partial_answer}\n"
+                )
 
 
 def render_research_phase():
@@ -280,29 +351,63 @@ def run_research():
         search_count = 0
         think_count = 0
         
-        # Auto-generate initial task list
-        st.session_state.todos = [
-            {"title": "Analyze research question", "status": "in_progress"},
-            {"title": "Search for information", "status": "pending"},
-            {"title": "Reflect on findings", "status": "pending"},
-            {"title": "Synthesize final answer", "status": "pending"},
-        ]
+        # Auto-generate initial task list (restore from progress if available)
+        if "todos" in st.session_state.research_progress:
+            st.session_state.todos = st.session_state.research_progress["todos"]
+        else:
+            st.session_state.todos = [
+                {"title": "Analyze research question", "status": "in_progress"},
+                {"title": "Search for information", "status": "pending"},
+                {"title": "Reflect on findings", "status": "pending"},
+                {"title": "Synthesize final answer", "status": "pending"},
+            ]
+        
+        # Restore other progress if available
+        if "research_progress" in st.session_state:
+            search_count = st.session_state.research_progress.get("search_count", 0)
+            think_count = st.session_state.research_progress.get("think_count", 0)
+            all_content = st.session_state.research_progress.get("all_content", [])
+            final_answer = st.session_state.research_progress.get("final_answer", None)
+            research_steps = st.session_state.research_progress.get("research_steps", [])
+            search_results = st.session_state.research_progress.get("search_results", [])
+        else:
+            search_count = 0
+            think_count = 0
+            all_content = []
+            final_answer = None
+            research_steps = []
+            search_results = []
+        
+        # Initialize termination reason tracking
+        st.session_state.termination_reason = None
         
         while retry_count < max_retries:
             try:
                 event_count = 0
-                all_content = []  # Collect all content for final report
                 search_results = []  # Track search results
-                final_answer = None  # Track the final answer specifically
-                research_steps = []  # Track detailed research steps
+                latest_agent_iteration = 0
                 
-                # Stream agent execution
+                # Stream agent execution with timeout protection
+                stream_timeout_s = float(os.getenv("AGENT_STREAM_TIMEOUT_S", "300"))  # 5 minutes total
+                stream_start_time = time.time()
+                last_event_time = stream_start_time
+                heartbeat_interval = 30  # seconds
+                
                 for event in agent.stream(initial_state):
                     event_count += 1
+                    current_time = time.time()
+                    last_event_time = current_time
+                    
+                    # Check for overall timeout
+                    if current_time - stream_start_time > stream_timeout_s:
+                        print(f"\n[STREAM_TIMEOUT] Overall stream timeout after {stream_timeout_s}s")
+                        st.session_state.termination_reason = f"⚠️ Stream timeout after {stream_timeout_s//60}min {stream_timeout_s%60}s"
+                        break
                     
                     # Log all events for debugging
                     with event_log:
-                        st.write(f"Event {event_count}: {list(event.keys())}")
+                        elapsed = current_time - stream_start_time
+                        st.write(f"Event {event_count} (t+{elapsed:.1f}s): {list(event.keys())}")
                     
                     # Process different event types
                     for key, value in event.items():
@@ -311,6 +416,16 @@ def run_research():
                         
                         # Handle agent node output
                         if key == "agent" and isinstance(value, dict):
+                            if isinstance(value.get("iteration_count"), int):
+                                latest_agent_iteration = value["iteration_count"]
+                                st.session_state.iteration_count = latest_agent_iteration
+                                print(f"[STREAM] Updated iteration count to {latest_agent_iteration}")
+                            
+                            # Capture termination reason from agent state
+                            if value.get("termination_reason"):
+                                st.session_state.termination_reason = value["termination_reason"]
+                                print(f"[STREAM] Captured termination reason: {value['termination_reason']}")
+                            
                             messages = value.get("messages", [])
                             for msg in messages:
                                 # Capture content for final report
@@ -398,11 +513,35 @@ def run_research():
                                             if submitted_answer and (final_answer is None or len(submitted_answer) > len(final_answer or '')):
                                                 final_answer = submitted_answer
                                 
-                                # Update stats
+                                # Update stats and persist progress
                                 stats_placeholder.info(f"📊 Searches: {search_count} | Reflections: {think_count} | Events: {event_count}")
+                                
+                                # Persist progress to prevent loss on refresh
+                                st.session_state.research_progress = {
+                                    "search_count": search_count,
+                                    "think_count": think_count,
+                                    "all_content": all_content,
+                                    "final_answer": final_answer,
+                                    "research_steps": research_steps,
+                                    "todos": st.session_state.todos,
+                                    "iteration_count": latest_agent_iteration
+                                }
+                                
+                                # Check for early termination conditions
+                                if st.session_state.early_termination_enabled:
+                                    if (search_count >= 10 and think_count >= 3 and 
+                                        final_answer and len(final_answer) > 800):
+                                        print(f"\n[EARLY_TERMINATION] Quality threshold met: {search_count} searches, {think_count} thinks, {len(final_answer)} char answer")
+                                        st.session_state.early_termination_triggered = True
+                                        if not st.session_state.termination_reason:
+                                            st.session_state.termination_reason = f"✅ Early termination - quality threshold met ({search_count} searches, {think_count} reflections)"
+                                        break
                         
                         # Handle tools node output
                         if key == "tools" and isinstance(value, dict):
+                            if isinstance(value.get("iteration_count"), int):
+                                latest_agent_iteration = value["iteration_count"]
+                                st.session_state.iteration_count = latest_agent_iteration
                             messages = value.get("messages", [])
                             for msg in messages:
                                 if hasattr(msg, 'content') and msg.content:
@@ -442,13 +581,19 @@ def run_research():
                             "description": str(value)[:100] if value else "",
                             "timestamp": datetime.now().isoformat(),
                         }
-                        st.session_state.iteration_count += 1
                     
                     # Check max iterations
-                    if st.session_state.iteration_count >= config["recursion_limit"]:
+                    if latest_agent_iteration >= config["recursion_limit"]:
                         st.session_state.max_iterations_reached = True
+                        if not st.session_state.termination_reason:
+                            st.session_state.termination_reason = f"⚠️ Maximum iterations reached ({config['recursion_limit']})"
                         st.warning("Maximum iterations reached, stopping...")
                         break
+                    
+                    # Heartbeat check - if no events for too long, something may be stuck
+                    if current_time - last_event_time > heartbeat_interval:
+                        st.warning(f"⚠️ No events for {heartbeat_interval}s, agent may be stuck...")
+                        # Continue for now, but this indicates a potential issue
                 
                 # Mark all tasks complete
                 for todo in st.session_state.todos:
@@ -456,6 +601,10 @@ def run_research():
                 
                 # Store research steps in session state for display
                 st.session_state.research_steps = research_steps
+                
+                # Clear progress cache on successful completion
+                if "research_progress" in st.session_state:
+                    del st.session_state.research_progress
                 
                 # Build final report from the accepted final answer
                 # Look for FINAL_ANSWER_ACCEPTED in search_results (tool outputs)
@@ -472,16 +621,59 @@ def run_research():
                     # Find the longest content as the likely final answer
                     final_answer = max(all_content, key=len) if all_content else "No answer generated."
                 
-                # Always build a report, even if answer wasn't formally accepted
+                # Build comprehensive fallback report from search results and reflections
                 if final_answer is None:
-                    final_answer = "Research completed but no final answer was generated. Check the event log for details."
+                    # Extract structured content from search results and reflections
+                    search_summaries = []
+                    reflection_summaries = []
+                    
+                    for result in search_results:
+                        if 'Title:' in result and 'URL:' in result:
+                            lines = result.split('\n')
+                            title = next((line.replace('Title: ', '') for line in lines if line.startswith('Title:')), 'Unknown')
+                            url = next((line.replace('URL: ', '') for line in lines if line.startswith('URL:')), '')
+                            content_line = next((line.replace('Content: ', '') for line in lines if line.startswith('Content:')), '')
+                            if content_line and len(content_line) > 50:
+                                search_summaries.append(f"**{title}** ({url})\n{content_line[:400]}...")
+                    
+                    for step in research_steps:
+                        if step.get('type') == 'reflection' and step.get('content'):
+                            reflection_summaries.append(step['content'][:300] + '...' if len(step['content']) > 300 else step['content'])
+                    
+                    # Build comprehensive answer from extracted content
+                    if search_summaries or reflection_summaries:
+                        answer_parts = [f"# Analysis of: {st.session_state.research_query}\n"]
+                        
+                        if search_summaries:
+                            answer_parts.append("## Key Research Findings\n")
+                            for i, summary in enumerate(search_summaries[:5], 1):
+                                answer_parts.append(f"{i}. {summary}\n\n")
+                        
+                        if reflection_summaries:
+                            answer_parts.append("## Analysis & Insights\n")
+                            for i, reflection in enumerate(reflection_summaries[:3], 1):
+                                answer_parts.append(f"**Insight {i}:** {reflection}\n\n")
+                        
+                        answer_parts.append(f"\n*Research completed with {search_count} searches and {think_count} reflections.*")
+                        final_answer = ''.join(answer_parts)
+                    else:
+                        final_answer = max(all_content, key=len) if all_content else "Research completed but no final answer was generated. Check the event log for details."
                 
                 if final_answer:
                     # Build comprehensive report
                     report = f"# Research Report\n\n"
                     report += f"**Query:** {st.session_state.research_query}\n\n"
                     report += f"**Research Stats:** {search_count} searches, {think_count} reflections\n\n"
-                    report += f"## Answer\n\n{final_answer}\n\n"
+                    
+                    # Add termination reason if research ended partially
+                    if st.session_state.termination_reason:
+                        report += f"**Completion Status:** {st.session_state.termination_reason}\n\n"
+                    
+                    # Check if this is a structured answer or needs formatting
+                    if final_answer.startswith('# Analysis of:'):
+                        report += final_answer  # Already well-formatted
+                    else:
+                        report += f"## Answer\n\n{final_answer}\n\n"
                     
                     if search_results:
                         # Extract URLs from search results (excluding the final answer result)
@@ -517,13 +709,57 @@ def run_research():
                     st.error(f"Error during research: {error_msg}")
                     import traceback
                     st.code(traceback.format_exc())
+                    # Build emergency partial report from any available data
+                    partial_answer = None
+                    if final_answer:
+                        partial_answer = final_answer
+                    elif all_content:
+                        partial_answer = max(all_content, key=len)
+                    elif "research_progress" in st.session_state:
+                        progress = st.session_state.research_progress
+                        if progress.get("all_content"):
+                            partial_answer = max(progress["all_content"], key=len)
+                        elif progress.get("research_steps"):
+                            # Build answer from cached research steps
+                            cached_searches = [s for s in progress["research_steps"] if s.get("type") == "search"]
+                            cached_reflections = [s for s in progress["research_steps"] if s.get("type") == "reflection"]
+                            
+                            if cached_searches or cached_reflections:
+                                parts = [f"Partial research results for: {st.session_state.research_query}\n\n"]
+                                if cached_searches:
+                                    parts.append(f"Completed {len(cached_searches)} searches:\n")
+                                    for search in cached_searches[:3]:
+                                        parts.append(f"- {search.get('query', 'Unknown query')}\n")
+                                if cached_reflections:
+                                    parts.append(f"\nAnalysis insights ({len(cached_reflections)} reflections):\n")
+                                    for refl in cached_reflections[:2]:
+                                        content = refl.get('content', '')[:200]
+                                        parts.append(f"- {content}...\n")
+                                partial_answer = ''.join(parts)
+                    else:
+                        partial_answer = "Research failed before any answer could be captured. Check the event log and traceback above."
+                    
+                    # Add termination reason to error report if available
+                    termination_info = ""
+                    if st.session_state.termination_reason:
+                        termination_info = f"**Termination Reason:** {st.session_state.termination_reason}\n\n"
+                    
+                    st.session_state.final_report = (
+                        "# Research Report (Error Recovery)\n\n"
+                        f"**Query:** {st.session_state.research_query}\n\n"
+                        f"{termination_info}"
+                        "## Partial Results\n\n"
+                        f"{partial_answer}\n\n"
+                        "---\n\n"
+                        "**Note:** Research was interrupted due to an error, but partial results were recovered.\n\n"
+                        f"**Technical Details:** {error_msg}\n"
+                    )
                     st.session_state.current_phase = "complete"  # Still transition to show what we have
                     status.update(label="❌ Research Failed", state="error", expanded=True)
                     break
         
-        # Only rerun if we successfully transitioned to complete phase
-        if st.session_state.current_phase == "complete":
-            st.rerun()
+        # Always rerun to show results, even on error
+        st.rerun()
 
 
 def render_completion_phase():
