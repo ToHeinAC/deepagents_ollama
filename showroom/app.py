@@ -137,7 +137,7 @@ def render_sidebar():
         st.write(f"🤖 **{config['model']}** @ `{config['base_url']}`")
         
         # Timeout & Limits Settings
-        with st.expander("⏱️ Timeouts & Limits", expanded=True):
+        with st.expander("⏱️ Timeouts & Limits", expanded=False):
             stream_timeout = st.slider("Session Timeout (min)", 5, 60, 30, help="Max time for entire research session")
             os.environ["AGENT_STREAM_TIMEOUT_S"] = str(stream_timeout * 60)
             
@@ -393,7 +393,11 @@ def run_research():
                 last_event_time = stream_start_time
                 heartbeat_interval = 30  # seconds
                 
-                for event in agent.stream(initial_state):
+                # Get current recursion limit from environment
+                current_recursion_limit = int(os.getenv("RECURSION_LIMIT", "100"))
+                config = {"recursion_limit": current_recursion_limit}
+                
+                for event in agent.stream(initial_state, config=config):
                     event_count += 1
                     current_time = time.time()
                     last_event_time = current_time

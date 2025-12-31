@@ -397,12 +397,13 @@ DO NOT output JSON text. Make an actual tool call to submit_final_answer NOW."""
     workflow.add_edge("remind", "agent")
     workflow.add_edge("force_submit", "tools")  # Route forced submission through tools for validation
     
-    # Compile
+    # Compile workflow (recursion limit is set during invocation, not compilation)
     return workflow.compile()
 
 
-# Create global agent instance
-agent = create_agent()
+# Global agent instance - will be recreated when recursion limit changes
+agent = None
+_last_recursion_limit = None
 
 
 def get_agent():
@@ -411,13 +412,25 @@ def get_agent():
     Returns:
         The LangGraph research agent ready for invocation.
     """
+    global agent, _last_recursion_limit
+    
+    # Check if recursion limit has changed and recreate agent if needed
+    current_recursion_limit = int(os.getenv("RECURSION_LIMIT", str(RECURSION_LIMIT)))
+    
+    if agent is None or _last_recursion_limit != current_recursion_limit:
+        print(f"[AGENT] Creating agent with recursion limit: {current_recursion_limit}")
+        agent = create_agent()
+        _last_recursion_limit = current_recursion_limit
+    
     return agent
 
 
 def get_agent_config():
     """Get agent configuration for display."""
+    # Use current recursion limit from environment
+    current_recursion_limit = int(os.getenv("RECURSION_LIMIT", str(RECURSION_LIMIT)))
     return {
         "model": OLLAMA_MODEL,
         "base_url": OLLAMA_BASE_URL,
-        "recursion_limit": RECURSION_LIMIT,
+        "recursion_limit": current_recursion_limit,
     }
