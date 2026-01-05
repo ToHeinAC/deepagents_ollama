@@ -5,7 +5,7 @@ A fully local deep researcher using LangChain's DeepAgents framework with Ollama
 ## Features
 
 - 🔍 **Deep Research**: Multi-step research with sub-agent delegation
-- 🤖 **Local LLM**: Uses Ollama with `gpt-oss:20b` model
+- 🤖 **Local LLM**: Uses Ollama with `qwen3:14b` model
 - 📋 **Task Planning**: Automatic task decomposition with `write_todos`
 - 🔄 **Sub-Agents**: Research and critique sub-agents for quality
 - 🌐 **Web Search**: Tavily integration for real-time web research
@@ -14,7 +14,7 @@ A fully local deep researcher using LangChain's DeepAgents framework with Ollama
 ## Requirements
 
 - Python 3.10+
-- [Ollama](https://ollama.ai/) with `gpt-oss:20b` model installed
+- [Ollama](https://ollama.ai/) with `qwen3:14b` model installed
 - [uv](https://github.com/astral-sh/uv) for environment management
 - [Tavily API key](https://tavily.com/) for web search
 
@@ -22,7 +22,7 @@ A fully local deep researcher using LangChain's DeepAgents framework with Ollama
 
 1. **Install Ollama model** (if not already done):
    ```bash
-   ollama pull gpt-oss:20b
+   ollama pull qwen3:14b
    ```
 
 2. **Install dependencies**:
@@ -35,7 +35,7 @@ A fully local deep researcher using LangChain's DeepAgents framework with Ollama
    ```bash
    # .env file contains:
    TAVILY_API_KEY="your-tavily-key"
-   OLLAMA_MODEL="gpt-oss:20b"
+   OLLAMA_MODEL="qwen3:14b"
    ```
 
 4. **Run the application**:
@@ -74,7 +74,7 @@ Edit `.env` to customize:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OLLAMA_MODEL` | `gpt-oss:20b` | Ollama model to use |
+| `OLLAMA_MODEL` | `qwen3:14b` | Ollama model to use |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server URL |
 | `MAX_CONCURRENT_RESEARCH_UNITS` | `3` | Max parallel sub-agents |
 | `MAX_RESEARCHER_ITERATIONS` | `3` | Max research rounds |
@@ -82,4 +82,4 @@ Edit `.env` to customize:
 
 ## License
 
-MIT License
+Apache 2.0 License

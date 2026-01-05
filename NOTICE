@@ -1,0 +1,47 @@
+DeepAgents Ollama - Local Research Agent
+Copyright 2024-2026
+
+This product includes software developed at various organizations.
+
+================================================================================
+
+This project uses the Qwen3 language model series developed by Alibaba Cloud.
+
+Qwen3 Model Information:
+- Model Family: Qwen3
+- Default Model: qwen3:14b
+- Developer: Alibaba Cloud
+- License: Apache 2.0
+- Model Card: https://huggingface.co/Qwen/Qwen2.5-14B-Instruct
+- Paper: https://arxiv.org/abs/2407.10671
+
+The Qwen3 models are distributed under the Apache 2.0 License.
+For more information about Qwen3, visit: https://github.com/QwenLM/Qwen
+
+================================================================================
+
+Third-Party Dependencies:
+
+LangGraph (Apache 2.0)
+- Copyright: LangChain, Inc.
+- Repository: https://github.com/langchain-ai/langgraph
+
+LangChain (MIT License)
+- Copyright: LangChain, Inc.
+- Repository: https://github.com/langchain-ai/langchain
+
+Streamlit (Apache 2.0)
+- Copyright: Snowflake Inc.
+- Repository: https://github.com/streamlit/streamlit
+
+Ollama (MIT License)
+- Copyright: Ollama contributors
+- Repository: https://github.com/ollama/ollama
+
+Tavily Python SDK (Apache 2.0)
+- Copyright: Tavily
+- Repository: https://github.com/tavily-ai/tavily-python
+
+================================================================================
+
+For complete license information, see the LICENSE file in this repository.

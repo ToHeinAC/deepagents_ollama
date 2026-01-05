@@ -123,12 +123,16 @@ End with a Sources section:
 """
 
 
-def create_agent():
+def create_agent(model_name=None):
     """Create a LangGraph-based research agent."""
+    
+    # Use provided model name or fall back to environment/default
+    selected_model = model_name or os.getenv("OLLAMA_MODEL", OLLAMA_MODEL)
+    print(f"[AGENT] Creating agent with model: {selected_model}")
     
     # Configure local Ollama model with tools
     model = ChatOllama(
-        model=OLLAMA_MODEL,
+        model=selected_model,
         base_url=OLLAMA_BASE_URL,
         temperature=0.0,
     )
@@ -152,7 +156,9 @@ def create_agent():
             system_msg = HumanMessage(content=f"System: {SYSTEM_PROMPT}")
             messages = [system_msg] + list(messages)
         
-        print(f"[AGENT] Invoking model: {OLLAMA_MODEL}")
+        # Get current model from environment (updated by GUI)
+        current_model = os.getenv("OLLAMA_MODEL", OLLAMA_MODEL)
+        print(f"[AGENT] Invoking model: {current_model}")
         
         # Clear memory before model invocation to ensure resources available
         clear_cuda_memory(verbose=True)
@@ -406,8 +412,11 @@ agent = None
 _last_recursion_limit = None
 
 
-def get_agent():
+def get_agent(model_name=None):
     """Get the configured research agent instance.
+    
+    Args:
+        model_name: Optional model name to use. If None, uses environment variable.
     
     Returns:
         The LangGraph research agent ready for invocation.
@@ -416,10 +425,15 @@ def get_agent():
     
     # Check if recursion limit has changed and recreate agent if needed
     current_recursion_limit = int(os.getenv("RECURSION_LIMIT", str(RECURSION_LIMIT)))
+    current_model = model_name or os.getenv("OLLAMA_MODEL", OLLAMA_MODEL)
     
-    if agent is None or _last_recursion_limit != current_recursion_limit:
-        print(f"[AGENT] Creating agent with recursion limit: {current_recursion_limit}")
-        agent = create_agent()
+    # Recreate agent if recursion limit or model has changed
+    if (agent is None or 
+        _last_recursion_limit != current_recursion_limit or
+        getattr(agent, '_model_name', None) != current_model):
+        print(f"[AGENT] Creating agent with model: {current_model}, recursion limit: {current_recursion_limit}")
+        agent = create_agent(model_name=current_model)
+        agent._model_name = current_model  # Store model name for comparison
         _last_recursion_limit = current_recursion_limit
     
     return agent
@@ -429,8 +443,10 @@ def get_agent_config():
     """Get agent configuration for display."""
     # Use current recursion limit from environment
     current_recursion_limit = int(os.getenv("RECURSION_LIMIT", str(RECURSION_LIMIT)))
+    # Use current model from environment (updated by GUI selection)
+    current_model = os.getenv("OLLAMA_MODEL", OLLAMA_MODEL)
     return {
-        "model": OLLAMA_MODEL,
+        "model": current_model,
         "base_url": OLLAMA_BASE_URL,
         "recursion_limit": current_recursion_limit,
     }

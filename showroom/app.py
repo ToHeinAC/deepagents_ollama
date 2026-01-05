@@ -98,6 +98,11 @@ def initialize_session_state():
     if "current_step" not in st.session_state:
         st.session_state.current_step = None
     
+    if "selected_model" not in st.session_state:
+        st.session_state.selected_model = "qwen3:14b"  # Default model
+        # Ensure environment variable is set to match session state
+        os.environ["OLLAMA_MODEL"] = st.session_state.selected_model
+    
     if "step_history" not in st.session_state:
         st.session_state.step_history = []
     
@@ -133,8 +138,41 @@ def render_sidebar():
         
         config = get_agent_config()
         
+        # LLM Model Selection
+        with st.expander("🤖 LLM Model Selection", expanded=False):
+            available_models = ["qwen3:8b", "qwen3:14b", "qwen3:30b", "qwen3-coder:30b"]
+            model_descriptions = {
+                "qwen3:8b": "Fast, lightweight model - good for quick research",
+                "qwen3:14b": "Balanced performance and speed - recommended default",
+                "qwen3:30b": "High-quality model with enhanced reasoning capabilities",
+                "qwen3-coder:30b": "High-quality model with coding expertise - slower but more thorough"
+            }
+            
+            # Model selection
+            selected_model = st.selectbox(
+                "Choose LLM Model:",
+                available_models,
+                index=available_models.index(st.session_state.selected_model),
+                help="Select the Ollama model to use for research"
+            )
+            
+            # Update session state and environment if model changed
+            if selected_model != st.session_state.selected_model:
+                st.session_state.selected_model = selected_model
+                os.environ["OLLAMA_MODEL"] = selected_model
+                # Clear any cached agent to force recreation with new model
+                if hasattr(st.session_state, 'cached_agent'):
+                    del st.session_state.cached_agent
+                st.rerun()
+            
+            # Always ensure environment variable matches session state
+            os.environ["OLLAMA_MODEL"] = st.session_state.selected_model
+            
+            # Show model description
+            st.info(f"**{selected_model}**: {model_descriptions[selected_model]}")
+        
         # Basic Model Info (always visible)
-        st.write(f"🤖 **{config['model']}** @ `{config['base_url']}`")
+        st.write(f"🤖 **{st.session_state.selected_model}** @ `{config['base_url']}`")
         
         # Timeout & Limits Settings
         with st.expander("⏱️ Timeouts & Limits", expanded=False):
@@ -326,7 +364,12 @@ def render_research_phase():
 
 def run_research():
     """Execute the deep research agent."""
-    agent = get_agent()
+    # Ensure environment variable is set before creating agent
+    os.environ["OLLAMA_MODEL"] = st.session_state.selected_model
+    print(f"[DEBUG] Using model from session state: {st.session_state.selected_model}")
+    print(f"[DEBUG] Environment OLLAMA_MODEL: {os.environ.get('OLLAMA_MODEL')}")
+    
+    agent = get_agent(model_name=st.session_state.selected_model)
     query = st.session_state.research_query
     config = get_agent_config()
     
