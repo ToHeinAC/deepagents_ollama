@@ -59,7 +59,7 @@ This project implements a sophisticated agentic workflow using **LangGraph's Sta
 1. **Install Ollama model**:
    ```bash
    ollama pull qwen3:14b
-   # or other supported models: qwen3:8b, qwen3:30b, qwen3-coder:30b
+   # or other supported models: qwen3:8b, qwen3:30b, qwen3-coder:30b, devstral-small-2:24b, huihui_ai/mirothinker1-abliterated:30b
    ```
 
 2. **Clone and setup**:
@@ -202,6 +202,8 @@ Memory is cleared:
 - `qwen3:14b` (default) - Balanced performance and speed
 - `qwen3:30b` - High-quality model with enhanced reasoning capabilities
 - `qwen3-coder:30b` - High-quality model with coding expertise
+- `devstral-small-2:24b` - Mistral's development model - optimized for coding and technical tasks
+- `huihui_ai/mirothinker1-abliterated:30b` - Advanced thinking model with enhanced reasoning and uncensored responses
 - `llama3:8b` - Faster, lower resource usage
 - `llama3:70b` - Highest quality, requires significant resources
 - `mistral:7b` - Alternative option

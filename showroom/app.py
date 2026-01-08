@@ -140,12 +140,14 @@ def render_sidebar():
         
         # LLM Model Selection
         with st.expander("🤖 LLM Model Selection", expanded=False):
-            available_models = ["qwen3:8b", "qwen3:14b", "qwen3:30b", "qwen3-coder:30b"]
+            available_models = ["qwen3:8b", "qwen3:14b", "qwen3:30b", "qwen3-coder:30b", "devstral-small-2:24b", "huihui_ai/mirothinker1-abliterated:30b"]
             model_descriptions = {
                 "qwen3:8b": "Fast, lightweight model - good for quick research",
                 "qwen3:14b": "Balanced performance and speed - recommended default",
                 "qwen3:30b": "High-quality model with enhanced reasoning capabilities",
-                "qwen3-coder:30b": "High-quality model with coding expertise - slower but more thorough"
+                "qwen3-coder:30b": "High-quality model with coding expertise - slower but more thorough",
+                "devstral-small-2:24b": "Mistral's development model - optimized for coding and technical tasks",
+                "huihui_ai/mirothinker1-abliterated:30b": "Advanced thinking model with enhanced reasoning and uncensored responses"
             }
             
             # Model selection
