@@ -13,6 +13,8 @@ import sys
 import time
 import threading
 import signal
+import subprocess
+import psutil
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional
 from dotenv import load_dotenv
@@ -129,6 +131,114 @@ def initialize_session_state():
     
     if "early_termination_enabled" not in st.session_state:
         st.session_state.early_termination_enabled = True
+
+
+def get_current_port():
+    """Dynamically detect the current Streamlit port."""
+    try:
+        # First, try to get port from Streamlit's server info
+        if hasattr(st, 'server') and hasattr(st.server, 'server') and st.server.server:
+            try:
+                port = st.server.server.port
+                if port:
+                    return port
+            except:
+                pass
+        
+        # Get current process ID and check its connections first
+        current_pid = os.getpid()
+        current_process = psutil.Process(current_pid)
+        
+        # Check current process connections
+        try:
+            connections = current_process.net_connections(kind='inet')
+            for conn in connections:
+                if conn.status == 'LISTEN' and conn.laddr.ip in ['127.0.0.1', '0.0.0.0', 'localhost']:
+                    return conn.laddr.port
+        except:
+            pass
+        
+        # Find parent process (streamlit server) and check its connections
+        try:
+            parent_process = current_process.parent()
+            if parent_process:
+                connections = parent_process.net_connections(kind='inet')
+                for conn in connections:
+                    if conn.status == 'LISTEN' and conn.laddr.ip in ['127.0.0.1', '0.0.0.0', 'localhost']:
+                        return conn.laddr.port
+        except:
+            pass
+        
+        # Check all processes for Streamlit server
+        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+            try:
+                if proc.info['name'] and 'streamlit' in proc.info['name'].lower():
+                    connections = proc.net_connections(kind='inet')
+                    for conn in connections:
+                        if conn.status == 'LISTEN' and conn.laddr.ip in ['127.0.0.1', '0.0.0.0', 'localhost']:
+                            return conn.laddr.port
+                elif proc.info['cmdline']:
+                    cmdline = ' '.join(proc.info['cmdline'])
+                    if 'streamlit run' in cmdline and 'app.py' in cmdline:
+                        connections = proc.net_connections(kind='inet')
+                        for conn in connections:
+                            if conn.status == 'LISTEN' and conn.laddr.ip in ['127.0.0.1', '0.0.0.0', 'localhost']:
+                                return conn.laddr.port
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        
+        # Fallback: check common Streamlit ports
+        for port in [8508, 8501, 8502, 8503, 8504, 8505, 8506, 8507]:
+            try:
+                result = subprocess.run(['lsof', '-ti', f':{port}'], 
+                                      capture_output=True, text=True, timeout=5)
+                if result.returncode == 0 and result.stdout.strip():
+                    return port
+            except (subprocess.TimeoutExpired, FileNotFoundError):
+                continue
+                
+        return 8501  # Default Streamlit port
+    except Exception as e:
+        print(f"[DEBUG] Error detecting port: {e}")
+        return 8501
+
+
+def safe_exit_app():
+    """Safely exit the Streamlit application and free up the port."""
+    try:
+        # Get current port
+        current_port = get_current_port()
+        
+        # Clear memory before exit
+        clear_cuda_memory(verbose=False)  # Silent memory cleanup
+        
+        # Find and terminate only the current Streamlit process
+        current_pid = os.getpid()
+        try:
+            # Get parent process (the actual streamlit server)
+            current_process = psutil.Process(current_pid)
+            parent_process = current_process.parent()
+            
+            if parent_process and 'streamlit' in ' '.join(parent_process.cmdline()).lower():
+                # Terminate parent streamlit process cleanly
+                parent_process.terminate()
+                # Wait briefly for clean shutdown
+                try:
+                    parent_process.wait(timeout=2)
+                except psutil.TimeoutExpired:
+                    # Force kill if it doesn't terminate cleanly
+                    parent_process.kill()
+            else:
+                # Fallback: terminate current process
+                os._exit(0)
+                
+        except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
+            # Fallback: clean exit
+            os._exit(0)
+        
+    except Exception as e:
+        # Silent fallback exit
+        os._exit(0)
 
 
 def render_sidebar():
@@ -258,6 +368,15 @@ def render_sidebar():
                 for key in list(st.session_state.keys()):
                     del st.session_state[key]
                 st.rerun()
+            
+            # Safe Exit Button
+            st.divider()
+            current_port = get_current_port()
+            if st.button("🚪 Exit App", type="secondary", help=f"Safely exit and free port {current_port}"):
+                st.warning(f"Shutting down application and freeing port {current_port}...")
+                st.info("The terminal will be free again after shutdown.")
+                time.sleep(1)  # Give user time to see the message
+                safe_exit_app()
         
         # Advanced Debug Info
         with st.expander("🔧 Debug Info"):
